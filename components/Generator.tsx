@@ -169,6 +169,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const audioQueueRef = useRef<AudioBufferSourceNode[]>([]);
   const analyzerUserRef = useRef<AnalyserNode | null>(null);
   const analyzerAiRef = useRef<AnalyserNode | null>(null);
+  const isMicOnRef = useRef(isMicOn); // Ref to track mic state in callbacks
   
   // Smoothing Ref
   const visualizerState = useRef({ user: 0, ai: 0 });
@@ -179,6 +180,11 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const videoIntervalRef = useRef<number | null>(null);
 
   const sessionRef = useRef<any>(null);
+
+  // Update ref when state changes
+  useEffect(() => {
+    isMicOnRef.current = isMicOn;
+  }, [isMicOn]);
 
   // --- INITIALIZATION ---
   useEffect(() => {
@@ -299,7 +305,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
             processorRef.current = processor;
 
             processor.onaudioprocess = (e) => {
-              if (!isMicOn) return; 
+              if (!isMicOnRef.current) return; // Use ref instead of state to capture latest value
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
@@ -778,3 +784,4 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 };
 
 export default Generator;
+    
