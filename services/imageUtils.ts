@@ -1,0 +1,1 @@
+// File deprecated. Image generation capabilities removed.

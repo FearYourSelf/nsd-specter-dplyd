@@ -1,0 +1,9 @@
+{
+  "name": "NSD-SPECTER",
+  "description": "The Oracle Engine.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera",
+    "display-capture"
+  ]
+}
