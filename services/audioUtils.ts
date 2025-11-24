@@ -59,3 +59,19 @@ export function createPcmBlob(data: Float32Array): { data: string, mimeType: str
         mimeType: 'audio/pcm;rate=16000'
     };
 }
+
+// Downsamples audio from any source rate to 16kHz
+export function downsampleTo16k(input: Float32Array, inputSampleRate: number): Float32Array {
+    if (inputSampleRate === 16000) return input;
+    const ratio = inputSampleRate / 16000;
+    const newLength = Math.round(input.length / ratio);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+        const originalIndex = i * ratio;
+        const index1 = Math.floor(originalIndex);
+        const index2 = Math.min(Math.ceil(originalIndex), input.length - 1);
+        const weight = originalIndex - index1;
+        result[i] = input[index1] * (1 - weight) + input[index2] * weight;
+    }
+    return result;
+}

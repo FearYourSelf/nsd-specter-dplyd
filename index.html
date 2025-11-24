@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NSD-SPECTER</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Rajdhani:wght@500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Rajdhani:wght@500;600;700&family=Space+Grotesk:wght@300;400;500;700&display=swap" rel="stylesheet">
     <style>
       :root {
         --voice-intensity: 0;
@@ -14,161 +14,85 @@
 
       body {
         font-family: 'Inter', sans-serif;
-        background-color: #0a0a0a; /* neutral-950 */
+        background-color: #050505;
         color: #e5e5e5;
         overflow-x: hidden;
-        /* Custom Sci-Fi Cursor (Red) */
-        cursor: url('data:image/svg+xml;utf8,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="8" stroke="%23dc2626" stroke-width="1.5" fill="none" /><circle cx="12" cy="12" r="2" fill="%23ef4444" /></svg>') 12 12, auto;
+        cursor: crosshair;
         scrollbar-width: none;
-        -ms-overflow-style: none;
       }
       
-      body::-webkit-scrollbar { display: none; }
-
-      /* Force Red Cursor */
-      button, a, input, select, .cursor-pointer, label {
-        cursor: url('data:image/svg+xml;utf8,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="8" stroke="%23dc2626" stroke-width="1.5" fill="none" /><circle cx="12" cy="12" r="2" fill="%23ef4444" /></svg>') 12 12, pointer !important;
+      /* Noise Texture */
+      .bg-noise {
+        position: fixed;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E");
+        pointer-events: none;
+        z-index: 5;
+        opacity: 0.4;
       }
 
-      .no-select {
-        -webkit-user-select: none;
-        -moz-user-select: none;
-        -ms-user-select: none;
-        user-select: none;
+      /* Scanlines */
+      .scanlines {
+        background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2));
+        background-size: 100% 4px;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        pointer-events: none;
+        z-index: 6;
       }
 
-      .no-scrollbar::-webkit-scrollbar {
-        display: none;
-      }
-      .no-scrollbar {
-        -ms-overflow-style: none;
-        scrollbar-width: none;
+      /* Custom Cursor */
+      button, a, input, .cursor-pointer {
+        cursor: pointer;
       }
 
       h1, h2, h3, .brand-font { font-family: 'Space Grotesk', sans-serif; }
       .font-tech { font-family: 'Rajdhani', sans-serif; }
 
-      /* Text Effects */
-      .text-glow {
-        text-shadow: 0 0 10px rgba(220, 38, 38, 0.5), 0 0 20px rgba(220, 38, 38, 0.3);
+      /* Glassmorphism Utilities */
+      .glass-panel {
+        background: rgba(10, 10, 10, 0.6);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
       }
-      .text-stroke {
-        -webkit-text-stroke: 1px rgba(220, 38, 38, 0.3);
-      }
-
-      /* Chromatic Aberration Effect - Visible Split */
-      .chromatic-aberration {
-        position: relative;
-      }
-      .chromatic-aberration::before,
-      .chromatic-aberration::after {
-        content: '';
-        position: absolute;
-        top: 0; left: 0; right: 0; bottom: 0;
-        border-radius: inherit;
-        pointer-events: none;
-        mix-blend-mode: screen;
-        opacity: 0.6;
-      }
-      .chromatic-aberration::before {
-        box-shadow: 0 0 0 2px cyan;
-        transform: translate(calc(var(--voice-intensity) * -2px), calc(var(--voice-intensity) * -1px));
-      }
-      .chromatic-aberration::after {
-        box-shadow: 0 0 0 2px red;
-        transform: translate(calc(var(--voice-intensity) * 2px), calc(var(--voice-intensity) * 1px));
+      
+      .glass-panel-active {
+        background: rgba(20, 5, 5, 0.7);
+        border: 1px solid rgba(220, 38, 38, 0.3);
+        box-shadow: 0 0 15px rgba(220, 38, 38, 0.1);
       }
 
       /* Animations */
-      @keyframes breathe-red {
-        0%, 100% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 20px rgba(220, 38, 38, 0.2); }
-        50% { transform: scale(1.05); opacity: 1; box-shadow: 0 0 40px rgba(220, 38, 38, 0.6); }
-      }
-
-      @keyframes pulse-soft {
-        0% { box-shadow: 0 0 20px rgba(220, 38, 38, 0.2); }
-        50% { box-shadow: 0 0 60px rgba(220, 38, 38, 0.6), 0 0 100px rgba(220, 38, 38, 0.3); }
-        100% { box-shadow: 0 0 20px rgba(220, 38, 38, 0.2); }
-      }
-      
-      .animate-pulse-soft {
-        animation: pulse-soft 2s ease-in-out infinite;
-      }
-
-      @keyframes aurora-red {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
-      }
-
-      .bg-animated-gradient-red {
-        background: linear-gradient(270deg, #0a0a0a, #450a0a, #7f1d1d, #0a0a0a);
-        background-size: 400% 400%;
-        animation: aurora-red 30s ease infinite;
-      }
-      
-      .perspective-grid-floor {
-        position: absolute;
-        bottom: 0;
-        left: -50%;
-        width: 200%;
-        height: 100%;
-        background-image: 
-          linear-gradient(rgba(220, 38, 38, 0.15) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(220, 38, 38, 0.15) 1px, transparent 1px);
-        background-size: 100px 100px;
-        transform-origin: bottom;
-        transform: perspective(300px) rotateX(60deg);
-        mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
-        -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
-      }
-
-      .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
-      .animate-fade-in-up { animation: fade-in-up 0.5s ease-out forwards; }
-      @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-      @keyframes fade-in-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-
-      /* New Logo Animations */
       @keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      @keyframes spin-slow-reverse { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
+      @keyframes spin-slower { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      @keyframes spin-reverse { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
 
-      .animate-spin-slow { animation: spin-slow 12s linear infinite; }
-      .animate-spin-slow-reverse { animation: spin-slow-reverse 15s linear infinite; }
+      .animate-spin-slow { animation: spin-slow 10s linear infinite; }
+      .animate-spin-slower { animation: spin-slower 20s linear infinite; }
+      .animate-spin-reverse { animation: spin-reverse 15s linear infinite; }
+      
+      .animate-pulse-fast { animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 
-      /* Transition Effects */
-      @keyframes implode {
-        0% { transform: scale(1); opacity: 1; filter: blur(0px); }
-        50% { transform: scale(0.5); opacity: 0.8; filter: blur(2px); }
-        100% { transform: scale(0); opacity: 0; filter: blur(10px); }
+      /* Transitions */
+      .transition-gpu {
+        transition-property: transform, opacity, background-color, border-color;
+        transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        transition-duration: 300ms;
+        will-change: transform, opacity;
       }
-      .animate-implode { animation: implode 0.8s cubic-bezier(0.55, 0.055, 0.675, 0.19) forwards; }
 
-      @keyframes shockwave {
-        0% { transform: scale(0); opacity: 0; border-width: 100px; }
-        50% { opacity: 1; }
-        100% { transform: scale(4); opacity: 0; border-width: 0px; }
-      }
-      .animate-shockwave { animation: shockwave 1s ease-out forwards; }
-
-      /* Assembly Animations */
-      @keyframes slide-in-top { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-      @keyframes slide-in-bottom { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-      @keyframes slide-in-left { from { transform: translateX(-100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-      @keyframes slide-in-right { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-      @keyframes fade-in-scale { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-
-      .animate-slide-in-top { animation: slide-in-top 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .animate-slide-in-bottom { animation: slide-in-bottom 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .animate-slide-in-left { animation: slide-in-left 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .animate-slide-in-right { animation: slide-in-right 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .animate-fade-in-scale { animation: fade-in-scale 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-
-      /* Typewriter Cursor */
+      /* Typewriter */
       .typewriter-cursor::after {
-        content: '_';
+        content: '|';
+        color: #ef4444;
         animation: blink 1s step-end infinite;
       }
       @keyframes blink { 50% { opacity: 0; } }
+
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
   <script type="importmap">
 {
@@ -185,6 +109,8 @@
 </head>
   <body>
     <div id="root"></div>
+    <div class="bg-noise"></div>
+    <div class="scanlines"></div>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>
