@@ -145,7 +145,12 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   // --- STATE ---
   const [isConnected, setIsConnected] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
+  
+  // Video & Camera State
   const [videoMode, setVideoMode] = useState<VideoMode>('NONE');
+  const [cameraFacingMode, setCameraFacingMode] = useState<'user' | 'environment'>('environment');
+  const [isFullScreenFeed, setIsFullScreenFeed] = useState(false);
+
   const [volumeUser, setVolumeUser] = useState(0);
   const [volumeAi, setVolumeAi] = useState(0);
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
@@ -449,43 +454,73 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   useEffect(() => {
     if (videoMode !== 'NONE') {
         const attachStream = async () => {
-            if(videoElementRef.current && videoStreamRef.current) {
-                videoElementRef.current.srcObject = videoStreamRef.current;
-                try {
-                    await videoElementRef.current.play();
-                    startFrameCapture();
-                } catch(e: any) {
-                    logToConsole("VIDEO PLAY ERROR: " + e.message, 'error');
+            // Slight delay to ensure element is mounted (especially when switching to/from fullscreen)
+            setTimeout(async () => {
+                if(videoElementRef.current && videoStreamRef.current) {
+                    videoElementRef.current.srcObject = videoStreamRef.current;
+                    try {
+                        await videoElementRef.current.play();
+                        startFrameCapture();
+                    } catch(e: any) {
+                        logToConsole("VIDEO PLAY ERROR: " + e.message, 'error');
+                    }
                 }
-            }
+            }, 100);
         };
-        // Small delay to ensure ref is ready
-        setTimeout(attachStream, 100);
+        attachStream();
     }
-  }, [videoMode]);
+  }, [videoMode, isFullScreenFeed]);
+
+  const startCamera = async (facingMode: 'user' | 'environment') => {
+      // Stop existing tracks if any
+      if (videoStreamRef.current) {
+          videoStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+              video: { 
+                  facingMode: { ideal: facingMode }
+              } 
+          });
+          
+          videoStreamRef.current = stream;
+          // Note: useEffect handles attaching stream to ref
+          
+          setVideoMode('CAMERA');
+          logToConsole(`CAMERA ACTIVE [${facingMode.toUpperCase()}]`, 'success');
+      } catch (e: any) {
+          console.error(e);
+          logToConsole(`FAILED TO START CAMERA: ${e.message}`, 'error');
+          setVideoMode('NONE');
+      }
+  };
+
+  const switchCamera = async () => {
+      const newMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+      setCameraFacingMode(newMode);
+      await startCamera(newMode);
+  };
 
   const toggleVideo = async (mode: VideoMode) => {
-      if (videoMode === mode) {
+      if (videoMode === mode && !isFullScreenFeed) {
           stopVideo();
           return;
       }
       
-      if (videoMode !== 'NONE') {
+      if (videoMode !== 'NONE' && videoMode !== mode) {
          stopVideo();
       }
       
       try {
-          let stream: MediaStream;
           if (mode === 'CAMERA') {
-             stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
-          } else {
-             stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1280, height: 720 } });
+             await startCamera(cameraFacingMode);
+          } else if (mode === 'SCREEN') {
+             const stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1280, height: 720 } });
+             videoStreamRef.current = stream;
+             setVideoMode('SCREEN');
+             logToConsole(`SCREEN STREAM ACQUIRED`, 'success');
           }
-          
-          videoStreamRef.current = stream;
-          setVideoMode(mode); 
-          logToConsole(`${mode} STREAM ACQUIRED`, 'success');
-
       } catch (e: any) {
           console.error(e);
           logToConsole(`FAILED TO START ${mode}: ${e.message}`, 'error');
@@ -500,6 +535,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           videoStreamRef.current = null;
       }
       setVideoMode('NONE');
+      setIsFullScreenFeed(false);
   };
 
   const startFrameCapture = () => {
@@ -642,12 +678,81 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
            </div>
        </div>
 
-       {/* DRAGGABLE VIDEO PREVIEW */}
-       {videoMode !== 'NONE' && (
+       {/* FULL SCREEN VIDEO FEED (MOBILE MODE) */}
+       {isFullScreenFeed && videoMode !== 'NONE' && (
+           <div className="fixed inset-0 z-[100] bg-black flex flex-col animate-fade-in">
+               <div className="relative flex-1 overflow-hidden">
+                   <video ref={videoElementRef} muted playsInline autoPlay className="w-full h-full object-cover transform" />
+                   
+                   {/* SCANLINE OVERLAY */}
+                   <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(transparent_50%,rgba(220,38,38,0.1)_50%)] bg-[length:100%_4px] z-10"></div>
+                   
+                   {/* HEADER */}
+                   <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-start z-20 bg-gradient-to-b from-black/80 to-transparent">
+                       <div className="text-[10px] text-red-500 font-mono tracking-widest uppercase animate-pulse">
+                           ● LIVE FEED // {videoMode}
+                       </div>
+                   </div>
+
+                   {/* MOBILE CONTROLS */}
+                   <div className="absolute bottom-8 left-0 right-0 flex justify-center gap-6 z-30 pb-safe">
+                       {/* MUTE TOGGLE */}
+                       <button 
+                           onClick={() => setIsMicOn(!isMicOn)}
+                           className={`p-4 rounded-full border backdrop-blur-md transition-all ${isMicOn ? 'bg-red-600/20 border-red-500 text-red-500' : 'bg-black/60 border-neutral-700 text-neutral-500'}`}
+                       >
+                           {isMicOn ? (
+                               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                           ) : (
+                               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" stroke="none"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
+                           )}
+                       </button>
+                       
+                       {/* SWAP CAMERA (Only if mode is CAMERA) */}
+                       {videoMode === 'CAMERA' && (
+                           <button 
+                               onClick={switchCamera}
+                               className="p-4 rounded-full bg-black/60 border border-neutral-700 text-white backdrop-blur-md hover:border-red-500 transition-all"
+                           >
+                               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                           </button>
+                       )}
+
+                       {/* DISABLE VIDEO */}
+                       <button 
+                           onClick={stopVideo}
+                           className="p-4 rounded-full bg-red-900/80 border border-red-500 text-white backdrop-blur-md transition-all"
+                       >
+                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 6l12 12" /></svg>
+                       </button>
+
+                       {/* EXIT FULL SCREEN */}
+                       <button 
+                           onClick={() => setIsFullScreenFeed(false)}
+                           className="p-4 rounded-full bg-black/60 border border-neutral-700 text-white backdrop-blur-md hover:border-red-500 transition-all"
+                       >
+                           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 15v4a1 1 0 001 1h4m11-5v4a1 1 0 01-1 1h-4m-5-10l-4-4m0 0L8 2m-4 0v4m16 4l4-4m0 0l-4-4m4 4v-4" /></svg>
+                       </button>
+                   </div>
+               </div>
+           </div>
+       )}
+
+       {/* DRAGGABLE VIDEO PREVIEW (DESKTOP MODE) */}
+       {videoMode !== 'NONE' && !isFullScreenFeed && (
            <DraggableWindow title={`LIVE FEED // ${videoMode}`} initialX={50} initialY={100} onClose={stopVideo}>
-               <div className="w-64 aspect-video bg-black relative">
+               <div className="w-64 aspect-video bg-black relative group">
                    <video ref={videoElementRef} muted playsInline autoPlay className="w-full h-full object-cover opacity-80" />
                    <div className="absolute inset-0 bg-[linear-gradient(transparent_50%,rgba(220,38,38,0.1)_50%)] bg-[length:100%_4px] pointer-events-none"></div>
+                   
+                   {/* EXPAND BUTTON */}
+                   <button 
+                     onClick={() => setIsFullScreenFeed(true)}
+                     className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-red-600/50 text-white rounded opacity-0 group-hover:opacity-100 transition-all z-20"
+                     title="Enter Full Screen Mode"
+                   >
+                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+                   </button>
                </div>
            </DraggableWindow>
        )}
@@ -784,4 +889,3 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 };
 
 export default Generator;
-    
