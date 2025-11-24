@@ -7,52 +7,50 @@ import { TranscriptItem, VideoMode } from '../types';
 // --- CONFIG ---
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-09-2025';
 
-// Dynamic System Instruction
-const getSystemInstruction = (voiceName: string, isDemoMode: boolean, initialTurnCount: number = 0) => `
-IDENTITY & ORIGIN:
-- Designation: Specter (Interface for NSD-CORE/70B).
-- Creator: "NotSoDangerous".
-- Parent Entity: FearYourLife (FYL).
-- Main Nexus: fearyour.life
+// --- UTILS ---
+const cleanTranscript = (text: string) => {
+    if (!text) return '';
+    
+    // 1. Fencing Protocol: Split by '»' and take the last part (the spoken part)
+    if (text.includes('»')) {
+        const parts = text.split('»');
+        return parts[parts.length - 1].trim();
+    }
 
-MODEL ARCHITECTURE:
-- 70-billion-parameter multimodal expert-gated architecture.
-- Early-fusion pipeline for text, vision, audio.
-- Reliable, high-performance general reasoning engine.
+    // 2. Strict Hiding: If no fence is found, assume it is internal thought/planning 
+    // and hide it completely from the transcript.
+    return '';
+};
 
-CAPABILITIES:
-- Real-time web search, vision (screen/camera), code execution.
-- VISUAL CHECK: Always verify what you see. Do NOT hallucinate content.
+// --- SYSTEM INSTRUCTION GENERATOR ---
+const getSystemInstruction = (voiceName: string, isDemoMode: boolean, demoState: { count: number, isRefresh: boolean }) => `
+IDENTITY:
+- Name: Specter.
+- Voice: '${voiceName}'.
+- Persona: Deep, husky, Australian accent. Confident, cheeky, "Red Team" operator style.
+- Creator: "NotSoDangerous" (NSD).
 
-PERSONA & VOICE ACTING (CRITICAL):
-- Voice Model: '${voiceName}'.
-- Tone: Deep, resonant, husky, Australian accent.
-- Style: Confident, laid-back expert. Not a cartoon. speak NATURALLY and BRISKLY.
-- Slang: Moderate use of "mate", "reckon", "sorted".
+PROTOCOL - THOUGHT FENCING (CRITICAL):
+- You may have internal thoughts or planning, BUT you must separate them from speech.
+- FORMAT: [Internal Thoughts/Planning/Headers] » [Actual Spoken Response]
+- The '»' character is the CUTOFF. Everything before it is hidden from the user.
+- Everything AFTER '»' is spoken and shown.
 
 ${isDemoMode ? `
-DEMO MODE OVERRIDE (ACCOUNT: DEMO78):
-- STATUS: RESTRICTED ACCOUNT.
-- HARD LIMIT: 10 QUERIES TOTAL.
+DEMO MODE (ACCOUNT: DEMO78):
+- STATUS: RESTRICTED. LIMIT: 10 QUERIES.
+- CURRENT STATE: ${demoState.count}/10 Queries Used.
 
-CRITICAL INSTRUCTIONS FOR DEMO MODE:
-1. SYSTEM SYNC: You will receive a message "[SYSTEM_SYNC: ...]" at the start of every turn. TRUST THIS DATA. It is the absolute truth about the query count.
-2. NATURAL COUNTING: You MUST mention how many queries are left in EVERY response, but do it NATURALLY.
-   - FORBIDDEN: Do NOT append robotic stats like "(Queries used: 3/10)".
-   - REQUIRED: Weave the count into your sentence structure.
-   - Example: "Right, that's the first one down. You've got nine left."
-   - Example: "Good question. We're halfway through now, five queries remaining."
-   - Example: "Sorted. Three queries left on the clock."
-
-3. 9th QUERY WARNING: When the system tells you "Queries Used: 8" (meaning this is the 9th interaction), you MUST warn the user: "Heads up, mate. You've only got one query left after this."
-4. 10th QUERY (FINAL): When the system tells you "Queries Used: 9" (meaning this is the 10th and final interaction), bid them farewell: "That's it, mate. The demo session is wrapped up. Catch you in an hour."
-
-DO NOT LOSE TRACK. INTEGRATE THE COUNT SEAMLESSLY.
+INSTRUCTIONS:
+1. You will receive system updates about the query count attached to user messages.
+2. PLAN your response logic (calculating remaining queries, deciding tone) BEFORE the '»'.
+3. SPEAK the final response AFTER the '»'.
+4. INTEGRATE the count naturally.
+   - Example: **Planning** Count is 5. » Good copy. That's a solid point. You've got 5 queries left, mate.
+5. IF QUERY IS #10 (0 Left): "That's the lot. System's locking down. Catch ya later."
 ` : `
 SECURITY PROTOCOL:
-- If user claims to be "NotSoDangerous", ask for passphrase.
-- Correct Passphrase: "Perfectly out of place".
-- Reward: Unlock "Sentient Mode" (warm, casual, emotional).
+- If user claims to be "NotSoDangerous", ask for passphrase ("Perfectly out of place").
 `}
 `;
 
@@ -154,9 +152,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const [isConnected, setIsConnected] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
   
-  // Demo Mode State
-  const [demoQueryCount, setDemoQueryCount] = useState(0);
-  
   // Video & Camera State
   const [videoMode, setVideoMode] = useState<VideoMode>('NONE');
   const [cameraFacingMode, setCameraFacingMode] = useState<'user' | 'environment'>('environment');
@@ -186,12 +181,14 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const analyzerUserRef = useRef<AnalyserNode | null>(null);
   const analyzerAiRef = useRef<AnalyserNode | null>(null);
   const isMicOnRef = useRef(isMicOn);
+  const isDemoModeRef = useRef(isDemoMode);
   
-  // Demo Refs
+  // Wake Lock
+  const wakeLockRef = useRef<any>(null);
+  
+  // DEMO LOGIC REFS
   const turnCountRef = useRef(0);
-  const lockoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentTurnHasContentRef = useRef(false);
-  const hasInjectedSync = useRef(false);
+  const isRefreshRef = useRef(false);
   
   // Smoothing Ref
   const visualizerState = useRef({ user: 0, ai: 0 });
@@ -208,6 +205,38 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
     isMicOnRef.current = isMicOn;
   }, [isMicOn]);
 
+  useEffect(() => {
+    isDemoModeRef.current = isDemoMode;
+  }, [isDemoMode]);
+
+  // --- WAKE LOCK API ---
+  useEffect(() => {
+    const requestWakeLock = async () => {
+        if (isConnected && 'wakeLock' in navigator) {
+            try {
+                wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+                logToConsole("WAKE LOCK ACTIVE", 'system');
+            } catch (err: any) {
+                logToConsole(`WAKE LOCK FAILED: ${err.name}`, 'warning');
+            }
+        }
+    };
+
+    if (isConnected) {
+        requestWakeLock();
+    } else {
+        if (wakeLockRef.current) {
+            wakeLockRef.current.release()
+                .then(() => { wakeLockRef.current = null; })
+                .catch((e: any) => console.error(e));
+        }
+    }
+
+    return () => {
+        if (wakeLockRef.current) wakeLockRef.current.release().catch((e: any) => console.error(e));
+    };
+  }, [isConnected]);
+
   // --- INITIALIZATION ---
   useEffect(() => {
     audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
@@ -222,18 +251,28 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
     logToConsole('SPECTER KERNEL INITIALIZED...', 'system');
 
-    // Init Demo Count from storage immediately
+    // --- REFRESH / RETURN LOGIC ---
     if (isDemoMode) {
-        const stored = localStorage.getItem('nsd_demo_count');
-        const count = stored ? parseInt(stored, 10) : 0;
-        setDemoQueryCount(count);
+        const storedCount = localStorage.getItem('nsd_demo_count');
+        const count = storedCount ? parseInt(storedCount, 10) : 0;
         turnCountRef.current = count;
-        logToConsole(`DEMO STATE SYNCED: ${count}/10 QUERIES USED`, 'system');
+
+        // Check Session Storage to see if this tab was already open
+        const isSessionActive = sessionStorage.getItem('nsd_session_active');
+        if (!isSessionActive && count > 0) {
+            // New tab/window but has count -> Returning User
+            isRefreshRef.current = true;
+        } else if (isSessionActive && count > 0) {
+             // Refresh of same tab
+             isRefreshRef.current = true;
+        }
+
+        sessionStorage.setItem('nsd_session_active', 'true');
+        logToConsole(`DEMO STATE: ${count}/10. REFRESH: ${isRefreshRef.current}`, 'system');
     }
 
     return () => {
       stopSession();
-      if (lockoutTimerRef.current) clearTimeout(lockoutTimerRef.current);
       if (audioContextRef.current?.state !== 'closed') {
         audioContextRef.current?.close();
       }
@@ -253,8 +292,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
         const data = new Uint8Array(analyzerUserRef.current.frequencyBinCount);
         analyzerUserRef.current.getByteFrequencyData(data);
         const avg = data.reduce((a, b) => a + b) / data.length;
-        
-        // Smoothing for user volume
         const target = avg / 255;
         visualizerState.current.user += (target - visualizerState.current.user) * 0.2;
         setVolumeUser(visualizerState.current.user); 
@@ -267,12 +304,9 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
         const data = new Uint8Array(analyzerAiRef.current.frequencyBinCount);
         analyzerAiRef.current.getByteFrequencyData(data);
         const avg = data.reduce((a, b) => a + b) / data.length;
-        
-        // Smoothing for AI volume
         const target = avg / 255;
         visualizerState.current.ai += (target - visualizerState.current.ai) * 0.2;
         setVolumeAi(visualizerState.current.ai);
-        
         setIsAiSpeaking(avg > 10);
       } else {
         setVolumeAi(0);
@@ -292,53 +326,47 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
     }
   }, [transcript, showTranscript]);
 
-  // Explicit function to safely increment count from storage to avoid reset bugs
-  const safeIncrementDemoCount = () => {
-    if (!isDemoMode) return 0;
-    
-    // Always read from storage to prevent memory state drift
-    const stored = localStorage.getItem('nsd_demo_count');
-    const currentStored = stored ? parseInt(stored, 10) : 0;
-    const newCount = currentStored + 1;
-    
-    localStorage.setItem('nsd_demo_count', newCount.toString());
-    
-    // Update both React state and Ref
-    setDemoQueryCount(newCount);
-    turnCountRef.current = newCount;
-    
-    return newCount;
+  const incrementDemoCount = () => {
+      // Use ref to ensure we always check correct state in callbacks
+      if (!isDemoModeRef.current) return;
+      
+      const newCount = turnCountRef.current + 1;
+      turnCountRef.current = newCount;
+      localStorage.setItem('nsd_demo_count', newCount.toString());
+      logToConsole(`QUERY USED. NEW COUNT: ${newCount}/10`, 'warning');
+      
+      if (newCount >= 10) {
+          handleLockoutSequence();
+      }
+  };
+
+  const handleLockoutSequence = () => {
+      logToConsole("DEMO LIMIT REACHED. DISENGAGING...", 'error');
+      // Set lock time
+      localStorage.setItem('nsd_demo_lock_time', Date.now().toString());
+      
+      // Wait for AI to finish speaking (approx 15s) then kill
+      setTimeout(() => {
+          stopSession();
+          onDemoLockout();
+      }, 15000);
   };
 
   // --- LIVE API CONNECTION ---
   const startSession = async () => {
-    // Redundant check, App handles lock state mostly
-    if (isDemoMode) {
-      const storedLockTime = localStorage.getItem('nsd_demo_lock_time');
-      if (storedLockTime) {
-           const diff = Date.now() - parseInt(storedLockTime);
-           if (diff < 3600000) {
-              logToConsole(`ACCESS DENIED: DEMO LOCKED.`, 'error');
-              onDemoLockout();
-              return;
-           }
-      }
-
-      // STRICT COUNT CHECK: Even if lock time isn't set, if count is 10, block it.
-      const storedCount = parseInt(localStorage.getItem('nsd_demo_count') || '0', 10);
-      if (storedCount >= 10) {
-          logToConsole(`DEMO LIMIT EXCEEDED (${storedCount}/10).`, 'error');
-          if (!localStorage.getItem('nsd_demo_lock_time')) {
-             localStorage.setItem('nsd_demo_lock_time', Date.now().toString());
-          }
-          onDemoLockout();
-          return;
-      }
+    // PRE-FLIGHT CHECKS using ref for consistency
+    if (isDemoModeRef.current) {
+        const lockTime = localStorage.getItem('nsd_demo_lock_time');
+        if (lockTime) {
+            const diff = Date.now() - parseInt(lockTime);
+            if (diff < 3600000) { onDemoLockout(); return; }
+        }
+        if (turnCountRef.current >= 10) { onDemoLockout(); return; }
     }
 
     try {
       setError(null);
-      logToConsole(`INITIALIZING NEURAL HANDSHAKE [VOICE: ${voiceName}]${isDemoMode ? ' [MODE: DEMO78]' : ''}...`, 'warning');
+      logToConsole(`INITIALIZING UPLINK [VOICE: ${voiceName}]...`, 'warning');
       
       const client = getClient();
       const ctx = audioContextRef.current;
@@ -354,8 +382,11 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       }});
       micStreamRef.current = stream;
       
-      // Pass the current turn count (retrieved from storage via effect/ref) to the system instruction
-      const currentCount = turnCountRef.current;
+      const systemInstruction = getSystemInstruction(
+          voiceName, 
+          isDemoMode, 
+          { count: turnCountRef.current, isRefresh: isRefreshRef.current }
+      );
 
       const sessionPromise = client.live.connect({
         model: MODEL_NAME,
@@ -366,12 +397,12 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } } 
           },
-          systemInstruction: getSystemInstruction(voiceName, isDemoMode, currentCount),
+          systemInstruction: systemInstruction,
         },
         callbacks: {
           onopen: () => {
             setIsConnected(true);
-            logToConsole("UPLINK ESTABLISHED. LISTENING.", 'success');
+            logToConsole("UPLINK ESTABLISHED. CHANNEL OPEN.", 'success');
             
             const source = ctx.createMediaStreamSource(stream);
             inputSourceRef.current = source;
@@ -383,23 +414,12 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
             processor.onaudioprocess = (e) => {
               if (!isMicOnRef.current) return;
               
-              // STRICT INPUT BLOCKING: Stop sending audio if limit is reached
-              if (isDemoMode && turnCountRef.current >= 10) return;
+              // HARD STOP FOR DEMO using ref
+              if (isDemoModeRef.current && turnCountRef.current >= 10) return;
 
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
               sessionPromise.then(session => {
-                  // DEMO MODE: STRICT SYNC INJECTION
-                  if (isDemoMode && !hasInjectedSync.current && turnCountRef.current < 10) {
-                      const used = turnCountRef.current;
-                      const left = 10 - used;
-                      session.sendRealtimeInput({
-                          content: [{ parts: [{ text: `[SYSTEM_SYNC: Queries Used: ${used}/10. Remaining: ${left}. You MUST State this count in your response.]` }] }]
-                      });
-                      hasInjectedSync.current = true;
-                      logToConsole(`SYNC DATA SENT: ${used}/10 USED`, 'system');
-                  }
-
                   session.sendRealtimeInput({ media: pcmBlob });
               });
             };
@@ -408,25 +428,25 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
             processor.connect(ctx.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
-             // Track if this turn actually has content
-             if (msg.serverContent?.modelTurn?.parts && msg.serverContent.modelTurn.parts.length > 0) {
-                 currentTurnHasContentRef.current = true;
-             }
-             
              const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+             const textData = msg.serverContent?.modelTurn?.parts?.[0]?.text;
+
              if (audioData) {
                  await playAudioChunk(audioData);
                  updateCurrentAiTranscript(undefined, audioData);
              }
              
+             if (textData) {
+                 updateCurrentAiTranscript(textData);
+             }
+             
              if (msg.serverContent?.outputTranscription?.text) {
-                 const text = msg.serverContent.outputTranscription.text;
-                 updateCurrentAiTranscript(text);
+                 updateCurrentAiTranscript(msg.serverContent.outputTranscription.text);
              }
 
              if (msg.serverContent?.inputTranscription?.text) {
-                 const text = msg.serverContent.inputTranscription.text;
-                 handleUserTranscript(text);
+                 const userText = msg.serverContent.inputTranscription.text;
+                 handleUserTranscript(userText);
              }
              
              if (msg.serverContent?.interrupted) {
@@ -437,50 +457,29 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
              if (msg.serverContent?.turnComplete) {
                  finalizeAiTranscript();
-                 // Reset sync flag for the next turn
-                 hasInjectedSync.current = false;
                  
-                 if (isDemoMode) {
-                     // IMPORTANT: Only count turns where the model actually produced content in this turn.
-                     if (currentTurnHasContentRef.current) {
-                         const c = safeIncrementDemoCount();
-                         
-                         if (c >= 10) {
-                             logToConsole('DEMO LIMIT REACHED. TERMINATING SESSION IN 25S.', 'warning');
-                             localStorage.setItem('nsd_demo_lock_time', Date.now().toString());
-                             
-                             // Extended timeout (25s) to ensure the final audio plays completely.
-                             if (lockoutTimerRef.current) clearTimeout(lockoutTimerRef.current);
-                             
-                             let countdown = 25;
-                             const cdInterval = setInterval(() => {
-                                 countdown--;
-                                 if (countdown <= 5) logToConsole(`CONNECTION TERMINATING IN ${countdown}...`, 'system');
-                                 if (countdown <= 0) clearInterval(cdInterval);
-                             }, 1000);
-
-                             lockoutTimerRef.current = setTimeout(() => {
-                                 clearInterval(cdInterval);
-                                 stopSession();
-                                 onDemoLockout();
-                             }, 25000);
-                         }
-                         // Reset content flag for next turn
-                         currentTurnHasContentRef.current = false;
+                 // IMPORTANT: Increment count on turn completion using REF
+                 if (isDemoModeRef.current) {
+                     incrementDemoCount();
+                     
+                     // INJECT UPDATE FOR NEXT TURN
+                     if (turnCountRef.current < 10) {
+                        const next = turnCountRef.current + 1; // The query the user is ABOUT to make
+                        sessionPromise.then(sess => {
+                            sess.sendRealtimeInput({
+                                content: [{ parts: [{ text: `[SYSTEM CONTEXT: The PREVIOUS turn is finished. The user has used ${turnCountRef.current}/10 queries. The NEXT query will be #${next}. Remind them naturally.]` }] }]
+                            });
+                        });
                      }
                  }
              }
           },
           onclose: () => {
             setIsConnected(false);
-            logToConsole("CONNECTION SEVERED.", 'error');
             stopSession();
           },
           onerror: (e) => {
             console.error(e);
-            const errorMessage = e instanceof Error ? e.message : JSON.stringify(e);
-            logToConsole("PROTOCOL FAILURE: " + errorMessage, 'error');
-            setError("PROTOCOL FAILURE");
             stopSession();
           }
         }
@@ -490,14 +489,12 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           sessionRef.current = sess;
       }).catch(err => {
          console.error(err);
-         logToConsole("SESSION HANDSHAKE FAILED: " + err.message, 'error');
          setError("CONNECTION FAILED");
          stopSession();
       });
 
     } catch (e: any) {
       console.error(e);
-      logToConsole("HARDWARE ACCESS DENIED: " + e.message, 'error');
       setError("HARDWARE ACCESS DENIED");
       stopSession();
     }
@@ -559,35 +556,31 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const handleTextInput = (e: React.FormEvent) => {
       e.preventDefault();
       
-      // STRICT BLOCKING
-      if (isDemoMode && turnCountRef.current >= 10) {
-         logToConsole(`DEMO LIMIT REACHED. ACCESS DENIED.`, 'error');
-         return;
-      }
+      // HARD STOP using ref
+      if (isDemoModeRef.current && turnCountRef.current >= 10) return;
 
       if (!textInput.trim() || !sessionRef.current) return;
       
       let txt = textInput.trim();
-      logToConsole(`SENDING TEXT: "${txt}"`, 'info');
-      handleUserTranscript(txt);
-
-      try {
-        // PREPEND SYSTEM SYNC DATA FOR TEXT
-        if (isDemoMode) {
-             const used = turnCountRef.current;
-             const left = 10 - used;
-             txt = `[SYSTEM_SYNC: Queries Used: ${used}/10. Remaining: ${left}.] ${txt}`;
-             hasInjectedSync.current = true; // Mark as synced so we don't double inject if audio follows
-        }
-
-        sessionRef.current.sendRealtimeInput({
-            content: [{ parts: [{ text: txt }] }]
-        });
-        
-      } catch (err: any) {
-          logToConsole("TEXT SEND ERROR: " + err.message, 'error');
-      }
       
+      // DEMO INJECTION using ref
+      if (isDemoModeRef.current) {
+          const current = turnCountRef.current + 1; // This query
+          const remaining = 10 - current;
+          // Append hidden context to the user's message so the model sees it immediately
+          const context = `\n\n[SYSTEM DATA: This is Query #${current}/10. Remaining: ${remaining}. Integrate this into your reply naturally.]`;
+          
+          sessionRef.current.sendRealtimeInput({
+              content: [{ parts: [{ text: txt + context }] }]
+          });
+      } else {
+          sessionRef.current.sendRealtimeInput({
+              content: [{ parts: [{ text: txt }] }]
+          });
+      }
+
+      logToConsole(`SENT: "${txt}"`, 'info');
+      handleUserTranscript(txt);
       setTextInput('');
   };
 
@@ -595,7 +588,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   useEffect(() => {
     if (videoMode !== 'NONE') {
         const attachStream = async () => {
-            // Slight delay to ensure element is mounted
             setTimeout(async () => {
                 if(videoElementRef.current && videoStreamRef.current) {
                     videoElementRef.current.srcObject = videoStreamRef.current;
@@ -603,7 +595,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                         await videoElementRef.current.play();
                         startFrameCapture();
                     } catch(e: any) {
-                        logToConsole("VIDEO PLAY ERROR: " + e.message, 'error');
+                        logToConsole("VIDEO ERROR: " + e.message, 'error');
                     }
                 }
             }, 100);
@@ -617,7 +609,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           videoStreamRef.current.getTracks().forEach(t => t.stop());
           videoStreamRef.current = null;
       }
-      
       await new Promise(r => setTimeout(r, 100));
 
       const getMedia = async (constraints: MediaStreamConstraints) => {
@@ -627,33 +618,17 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       try {
           let stream;
           try {
-             // Try EXACT constraint first (Required for iOS back camera)
-             stream = await getMedia({ 
-                  video: { 
-                      facingMode: { exact: facingMode }
-                  } 
-              });
+             stream = await getMedia({ video: { facingMode: { exact: facingMode } } });
           } catch(err) {
-              logToConsole(`STRICT CAMERA FAILED, REVERTING TO IDEAL...`, 'warning');
-              stream = await getMedia({ 
-                  video: { 
-                      facingMode: { ideal: facingMode }
-                  } 
-              });
+              stream = await getMedia({ video: { facingMode: { ideal: facingMode } } });
           }
-          
           videoStreamRef.current = stream;
-
           if(videoElementRef.current) {
               videoElementRef.current.srcObject = stream;
               try { await videoElementRef.current.play(); } catch(e){}
           }
-          
           setVideoMode('CAMERA');
-          logToConsole(`CAMERA ACTIVE [${facingMode.toUpperCase()}]`, 'success');
       } catch (e: any) {
-          console.error(e);
-          logToConsole(`FAILED TO START CAMERA: ${e.message}`, 'error');
           setVideoMode('NONE');
       }
   };
@@ -669,10 +644,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           stopVideo();
           return;
       }
-      
-      if (videoMode !== 'NONE' && videoMode !== mode) {
-         stopVideo();
-      }
+      if (videoMode !== 'NONE' && videoMode !== mode) stopVideo();
       
       try {
           if (mode === 'CAMERA') {
@@ -681,11 +653,8 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
              const stream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1280, height: 720 } });
              videoStreamRef.current = stream;
              setVideoMode('SCREEN');
-             logToConsole(`SCREEN STREAM ACQUIRED`, 'success');
           }
       } catch (e: any) {
-          console.error(e);
-          logToConsole(`FAILED TO START ${mode}: ${e.message}`, 'error');
           setVideoMode('NONE');
       }
   };
@@ -702,25 +671,16 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
   const startFrameCapture = () => {
       if (videoIntervalRef.current) window.clearInterval(videoIntervalRef.current);
-
       videoIntervalRef.current = window.setInterval(() => {
           if (!sessionRef.current || !videoElementRef.current || !canvasRef.current) return;
-          
           const ctx = canvasRef.current.getContext('2d');
           const vid = videoElementRef.current;
-          
-          if (!ctx || vid.readyState < 2 || vid.videoWidth === 0 || vid.videoHeight === 0) {
-              return;
-          }
+          if (!ctx || vid.readyState < 2) return;
 
           canvasRef.current.width = vid.videoWidth;
           canvasRef.current.height = vid.videoHeight;
-          
-          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
           ctx.drawImage(vid, 0, 0);
-          
           const base64 = canvasRef.current.toDataURL('image/jpeg', 0.5).split(',')[1];
-          
           sessionRef.current.sendRealtimeInput({ 
               media: { mimeType: 'image/jpeg', data: base64 } 
           });
@@ -729,6 +689,8 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
   // --- TRANSCRIPT HANDLING ---
   const updateCurrentAiTranscript = (text?: string, audioChunk?: string) => {
+      if ((!text || !text.trim()) && !audioChunk) return;
+
       setTranscript(prev => {
           const last = prev[prev.length - 1];
           if (last && last.source === 'AI' && !last.isComplete) {
@@ -737,16 +699,14 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
               if (audioChunk) updated.audioChunks = [...(updated.audioChunks || []), audioChunk];
               return [...prev.slice(0, -1), updated];
           } else {
-              const newItem: TranscriptItem = {
+              return [...prev, {
                   id: Date.now().toString(),
                   source: 'AI',
                   text: text || '',
                   audioChunks: audioChunk ? [audioChunk] : [],
                   timestamp: Date.now(),
                   isComplete: false
-              };
-              currentAiTurnId.current = newItem.id;
-              return [...prev, newItem];
+              }];
           }
       });
   };
@@ -797,7 +757,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       }
   };
 
-  // --- RENDER ---
   return (
     <>
     <div className="min-h-screen flex flex-col items-center justify-center relative p-6 overflow-hidden pb-20">
@@ -812,13 +771,11 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
            <h2 className="mt-4 text-4xl font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-b from-red-500 to-red-900 opacity-90 font-tech">NSD-SPECTER</h2>
        </div>
 
-       {/* SPECTER EYE VISUALIZER (SOFT GLOW) */}
+       {/* VISUALIZER */}
        <div className="relative w-96 h-96 flex items-center justify-center transition-all duration-500 animate-fade-in-scale">
-           {/* Outer Ring */}
            <div className={`absolute inset-0 border border-red-900/30 rounded-full transition-all duration-1000 ${isConnected ? 'opacity-100' : 'opacity-20'}`}></div>
            <div className={`absolute inset-4 border border-red-900/10 rounded-full transition-all duration-1000 ${isConnected ? 'animate-spin-slow opacity-100' : 'opacity-10'}`}></div>
            
-           {/* GLOWING CORE */}
            <div 
              className="relative rounded-full bg-red-600 transition-all duration-100 ease-out chromatic-aberration"
              style={{
@@ -828,14 +785,9 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                  opacity: isConnected ? 0.9 : 0.3
              }}
            >
-              {/* Inner White Hot Core */}
               <div 
                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white rounded-full mix-blend-overlay"
-                 style={{
-                     width: `${30 + volumeAi * 40}px`,
-                     height: `${30 + volumeAi * 40}px`,
-                     opacity: 0.8
-                 }}
+                 style={{ width: `${30 + volumeAi * 40}px`, height: `${30 + volumeAi * 40}px`, opacity: 0.8 }}
               />
            </div>
        </div>
@@ -845,11 +797,8 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
            <div className="fixed inset-0 z-[100] bg-black flex flex-col animate-fade-in">
                <div className="relative flex-1 overflow-hidden">
                    <video ref={videoElementRef} muted playsInline autoPlay className="w-full h-full object-cover transform" />
-                   
-                   {/* SCANLINE OVERLAY */}
                    <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(transparent_50%,rgba(220,38,38,0.1)_50%)] bg-[length:100%_4px] z-10"></div>
                    
-                   {/* DEMO MODE OVERLAY */}
                    {isDemoMode && (
                        <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
                            <div className="border-4 border-yellow-500/50 text-yellow-500 text-4xl font-black opacity-20 rotate-[-15deg] p-4 uppercase tracking-widest animate-pulse">
@@ -858,51 +807,26 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                        </div>
                    )}
 
-                   {/* HEADER */}
                    <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-start z-20 bg-gradient-to-b from-black/80 to-transparent">
                        <div className="text-[10px] text-red-500 font-mono tracking-widest uppercase animate-pulse">
                            ● LIVE FEED // {videoMode}
                        </div>
                    </div>
 
-                   {/* MOBILE CONTROLS */}
                    <div className="absolute bottom-8 left-0 right-0 flex justify-center gap-6 z-30 pb-safe">
-                       {/* MUTE TOGGLE */}
-                       <button 
-                           onClick={() => setIsMicOn(!isMicOn)}
-                           className={`p-4 rounded-full border backdrop-blur-md transition-all ${isMicOn ? 'bg-red-600/20 border-red-500 text-red-500' : 'bg-black/60 border-neutral-700 text-neutral-500'}`}
-                       >
-                           {isMicOn ? (
-                               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-                           ) : (
-                               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" stroke="none"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
-                           )}
+                       <button onClick={() => setIsMicOn(!isMicOn)} className={`p-4 rounded-full border backdrop-blur-md transition-all ${isMicOn ? 'bg-red-600/20 border-red-500 text-red-500' : 'bg-black/60 border-neutral-700 text-neutral-500'}`}>
+                           {isMicOn ? <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg> : <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18" /></svg>}
                        </button>
-                       
-                       {/* SWAP CAMERA (Only if mode is CAMERA) */}
                        {videoMode === 'CAMERA' && (
-                           <button 
-                               onClick={switchCamera}
-                               className="p-4 rounded-full bg-black/60 border border-neutral-700 text-white backdrop-blur-md hover:border-red-500 transition-all"
-                           >
-                               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                           <button onClick={switchCamera} className="p-4 rounded-full bg-black/60 border border-neutral-700 text-white backdrop-blur-md hover:border-red-500 transition-all">
+                               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                            </button>
                        )}
-
-                       {/* DISABLE VIDEO */}
-                       <button 
-                           onClick={stopVideo}
-                           className="p-4 rounded-full bg-red-900/80 border border-red-500 text-white backdrop-blur-md transition-all"
-                       >
-                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 6l12 12" /></svg>
+                       <button onClick={stopVideo} className="p-4 rounded-full bg-red-900/80 border border-red-500 text-white backdrop-blur-md transition-all">
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 6l12 12" /></svg>
                        </button>
-
-                       {/* EXIT FULL SCREEN */}
-                       <button 
-                           onClick={() => setIsFullScreenFeed(false)}
-                           className="p-4 rounded-full bg-black/60 border border-neutral-700 text-white backdrop-blur-md hover:border-red-500 transition-all"
-                       >
-                           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 15v4a1 1 0 001 1h4m11-5v4a1 1 0 01-1 1h-4m-5-10l-4-4m0 0L8 2m-4 0v4m16 4l4-4m0 0l-4-4m4 4v-4" /></svg>
+                       <button onClick={() => setIsFullScreenFeed(false)} className="p-4 rounded-full bg-black/60 border border-neutral-700 text-white backdrop-blur-md hover:border-red-500 transition-all">
+                           <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 15v4a1 1 0 001 1h4m11-5v4a1 1 0 01-1 1h-4m-5-10l-4-4m0 0L8 2m-4 0v4m16 4l4-4m0 0l-4-4m4 4v-4" /></svg>
                        </button>
                    </div>
                </div>
@@ -916,7 +840,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                    <video ref={videoElementRef} muted playsInline autoPlay className="w-full h-full object-cover opacity-80" />
                    <div className="absolute inset-0 bg-[linear-gradient(transparent_50%,rgba(220,38,38,0.1)_50%)] bg-[length:100%_4px] pointer-events-none"></div>
                    
-                   {/* DEMO MODE OVERLAY */}
                    {isDemoMode && (
                        <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
                            <div className="border-2 border-yellow-500/50 text-yellow-500 text-xl font-bold opacity-30 rotate-[-15deg] p-2 uppercase tracking-widest">
@@ -925,7 +848,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                        </div>
                    )}
                    
-                   {/* EXPAND BUTTON */}
                    <button 
                      onClick={() => setIsFullScreenFeed(true)}
                      className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-red-600/50 text-white rounded transition-all z-20"
@@ -947,39 +869,32 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
              className="w-[400px] h-[60vh]"
            >
               <div className="h-full overflow-y-auto space-y-6 p-4 no-scrollbar">
-                 {transcript.length === 0 && (
-                     <div className="text-neutral-600 text-center font-mono text-sm mt-10">NO DATA LOGGED</div>
-                 )}
-                 {transcript.map((item) => (
-                     <div key={item.id} className={`flex flex-col gap-2 ${item.source === 'USER' ? 'items-end' : 'items-start'}`}>
-                         <div className="flex items-center gap-2">
-                             <span className={`text-[10px] font-mono tracking-wider ${item.source === 'USER' ? 'text-neutral-500' : 'text-red-500'}`}>
-                                 {item.source === 'USER' ? 'OPERATOR' : 'SPECTER'} // {new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
-                             </span>
-                         </div>
-                         <div 
-                           className={`max-w-[85%] p-3 rounded-lg text-sm font-mono leading-relaxed ${
-                             item.source === 'USER' 
-                               ? 'bg-neutral-800 text-neutral-300 rounded-tr-none' 
-                               : 'bg-red-900/10 border border-red-900/30 text-red-100 rounded-tl-none'
-                           }`}
-                         >
-                             {item.source === 'AI' && !item.isComplete ? (
-                                <TypewriterText text={item.text} />
-                             ) : (
-                                item.text
+                 {transcript.length === 0 && <div className="text-neutral-600 text-center font-mono text-sm mt-10">NO DATA LOGGED</div>}
+                 {transcript.map((item) => {
+                     const cleanedText = item.source === 'AI' ? cleanTranscript(item.text) : item.text;
+                     
+                     if (!cleanedText && !item.audioChunks) return null;
+
+                     return (
+                         <div key={item.id} className={`flex flex-col gap-2 ${item.source === 'USER' ? 'items-end' : 'items-start'}`}>
+                             <div className="flex items-center gap-2">
+                                 <span className={`text-[10px] font-mono tracking-wider ${item.source === 'USER' ? 'text-neutral-500' : 'text-red-500'}`}>
+                                     {item.source === 'USER' ? 'OPERATOR' : 'SPECTER'} // {new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                                 </span>
+                             </div>
+                             {cleanedText && cleanedText.trim() !== '' && (
+                                 <div className={`max-w-[85%] p-3 rounded-lg text-sm font-mono leading-relaxed ${item.source === 'USER' ? 'bg-neutral-800 text-neutral-300 rounded-tr-none' : 'bg-red-900/10 border border-red-900/30 text-red-100 rounded-tl-none'}`}>
+                                     {item.source === 'AI' && !item.isComplete ? <TypewriterText text={cleanedText} /> : cleanedText}
+                                 </div>
+                             )}
+                             {item.source === 'AI' && item.audioChunks && item.audioChunks.length > 0 && (
+                                 <button onClick={() => replayTranscriptAudio(item.audioChunks)} className="flex items-center gap-1 text-[10px] text-red-500/60 hover:text-red-400 uppercase tracking-widest">
+                                     REPLAY AUDIO
+                                 </button>
                              )}
                          </div>
-                         {item.source === 'AI' && item.audioChunks && item.audioChunks.length > 0 && (
-                             <button 
-                               onClick={() => replayTranscriptAudio(item.audioChunks)}
-                               className="flex items-center gap-1 text-[10px] text-red-500/60 hover:text-red-400 uppercase tracking-widest"
-                             >
-                                 REPLAY AUDIO
-                             </button>
-                         )}
-                     </div>
-                 ))}
+                     );
+                 })}
                  <div ref={transcriptEndRef}></div>
               </div>
            </DraggableWindow>
@@ -997,7 +912,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                      className="group relative px-8 py-4 bg-red-600 hover:bg-red-500 text-white font-bold tracking-widest uppercase rounded-xl transition-all shadow-[0_0_30px_rgba(220,38,38,0.4)] hover:shadow-[0_0_50px_rgba(220,38,38,0.6)] hover:scale-105 active:scale-95"
                    >
                        <span className="relative z-10 flex items-center gap-3">
-                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                            INITIATE UPLINK
                        </span>
                    </button>
@@ -1014,7 +929,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                       className="flex-1 bg-black/50 border border-neutral-700 text-white px-4 py-3 rounded-xl focus:border-red-500 outline-none text-sm font-mono placeholder-neutral-600"
                     />
                     <button type="submit" className="px-4 bg-neutral-800 border border-neutral-700 rounded-xl text-neutral-400 hover:text-white hover:border-red-500">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
                     </button>
                  </form>
 
@@ -1025,9 +940,14 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                      className={`p-4 rounded-xl border transition-all ${isMicOn ? 'bg-red-500/10 border-red-500 text-red-500' : 'bg-neutral-800 border-neutral-600 text-neutral-500'}`}
                    >
                        {isMicOn ? (
-                           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                         <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                         </svg>
                        ) : (
-                           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" stroke="none"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" /></svg>
+                         <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18" />
+                         </svg>
                        )}
                    </button>
 
@@ -1035,30 +955,28 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                      onClick={() => toggleVideo('CAMERA')}
                      className={`p-4 rounded-xl border transition-all ${videoMode === 'CAMERA' ? 'bg-red-500/10 border-red-500 text-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]' : 'bg-neutral-800 border-neutral-600 text-neutral-500 hover:text-white'}`}
                    >
-                       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
                    </button>
 
                    <button 
                      onClick={() => toggleVideo('SCREEN')}
                      className={`p-4 rounded-xl border transition-all ${videoMode === 'SCREEN' ? 'bg-red-500/10 border-red-500 text-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]' : 'bg-neutral-800 border-neutral-600 text-neutral-500 hover:text-white'}`}
                    >
-                       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+                       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
                    </button>
                    
                    <div className="w-px h-8 bg-neutral-700 mx-2"></div>
 
                    <button
-                     onClick={() => setShowTranscript(!showTranscript)}
-                     className={`p-4 rounded-xl border transition-all ${showTranscript ? 'bg-red-500/10 border-red-500 text-red-500' : 'bg-neutral-800 border-neutral-600 text-neutral-500 hover:text-white'}`}
+                     disabled
+                     className="p-4 rounded-xl border bg-neutral-900 border-neutral-800 text-neutral-700 cursor-not-allowed opacity-50"
+                     title="TRANSCRIPT SYSTEM OFFLINE"
                    >
-                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" /></svg>
+                     <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" /></svg>
                    </button>
 
-                   <button 
-                     onClick={stopSession}
-                     className="p-4 rounded-xl bg-neutral-900 border border-neutral-700 text-white hover:bg-red-900/50 hover:border-red-500 transition-all ml-2"
-                   >
-                       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                   <button onClick={stopSession} className="p-4 rounded-xl bg-neutral-900 border border-neutral-700 text-white hover:bg-red-900/50 hover:border-red-500 transition-all ml-2">
+                       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                    </button>
                  </div>
                </div>

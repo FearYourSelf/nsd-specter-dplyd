@@ -39,15 +39,11 @@ const ParticleBackground: React.FC<{ mousePos: {x: number, y: number} }> = ({ mo
             ctx.fillStyle = 'rgba(220, 38, 38, 0.4)'; // Red
 
             particles.forEach(p => {
-                // Movement
                 p.x += p.vx;
                 p.y += p.vy;
-
-                // Bounce off walls
                 if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
                 if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
 
-                // Mouse interaction
                 const dx = p.x - (mousePos.x * window.innerWidth / 2 + window.innerWidth / 2);
                 const dy = p.y - (mousePos.y * window.innerHeight / 2 + window.innerHeight / 2);
                 const dist = Math.sqrt(dx*dx + dy*dy);
@@ -96,7 +92,6 @@ const SystemOverrideTransition: React.FC<{ onComplete: () => void }> = ({ onComp
   );
 };
 
-// Reusing BootSequence logic but with Red Theme text
 const BootSequence: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
   const [progress, setProgress] = useState(0);
   useEffect(() => {
@@ -133,8 +128,10 @@ const App: React.FC = () => {
   
   // Voice State
   const [currentVoice, setCurrentVoice] = useState('Puck');
+  
+  // Audio Ref for Roast (Preventing context limits)
+  const roastAudioContextRef = useRef<AudioContext | null>(null);
 
-  // Helper to log to console globally
   const logToConsole = (text: string, type: 'info'|'error'|'success'|'warning'|'system' = 'info') => {
       const now = new Date();
       const time = now.toLocaleTimeString([], { hour12: false, hour:'2-digit', minute:'2-digit', second:'2-digit' });
@@ -167,41 +164,29 @@ const App: React.FC = () => {
           logToConsole('--- SYSTEM COMMANDS ---', 'system');
           logToConsole('help             : Display available commands', 'info');
           logToConsole('clear            : Clear terminal output', 'info');
-          logToConsole('voice [name]     : Set voice identity (Puck, Charon, etc)', 'info');
-          logToConsole('override_demo    : Reset demo cooldown and counters', 'warning');
+          logToConsole('voice [name]     : Set voice identity', 'info');
+          logToConsole('override_demo    : Reset demo counters', 'warning');
       } else if (command === 'clear') {
           setConsoleLogs([]);
       } else if (command === 'override_demo') {
           localStorage.removeItem('nsd_demo_lock_time');
           localStorage.setItem('nsd_demo_count', '0');
           setLoginErrorMsg(null);
-          logToConsole('DEMO LOCKS FLUSHED. COUNTER RESET.', 'success');
-          // If we are currently in demo mode, this won't update the running generator instantly
-          // without a complex refactor, but it allows the user to refresh/re-login.
+          logToConsole('DEMO LOCKS FLUSHED.', 'success');
       } else if (command === 'voice' || command === 'set_voice') {
           if (args.length === 0) {
               logToConsole(`CURRENT VOICE: ${currentVoice}`, 'info');
-              logToConsole(`AVAILABLE: Puck, Charon, Kore, Fenrir, Zephyr`, 'info');
-              logToConsole(`USAGE: voice [name]`, 'info');
           } else {
               const newVoice = args[0].charAt(0).toUpperCase() + args[0].slice(1).toLowerCase();
-              const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
-              if (validVoices.includes(newVoice)) {
-                  setCurrentVoice(newVoice);
-                  logToConsole(`VOICE PROTOCOL UPDATED: ${newVoice}`, 'success');
-                  logToConsole(`SYSTEM ALERT: RESTART UPLINK TO APPLY AUDIO CONFIG`, 'warning');
-              } else {
-                  logToConsole(`ERROR: INVALID VOICE IDENTITY "${newVoice}"`, 'error');
-                  logToConsole(`AVAILABLE: ${validVoices.join(', ')}`, 'error');
-              }
+              setCurrentVoice(newVoice);
+              logToConsole(`VOICE UPDATED: ${newVoice}`, 'success');
           }
       } else {
-          logToConsole(`COMMAND NOT RECOGNIZED: ${rawCmd}. TYPE "help" FOR LIST.`, 'error');
+          logToConsole(`UNKNOWN COMMAND: ${rawCmd}`, 'error');
       }
       setConsoleInput('');
   };
   
-  // Mouse Parallax
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   useEffect(() => {
     const handleMove = (e: MouseEvent) => {
@@ -214,7 +199,6 @@ const App: React.FC = () => {
     return () => window.removeEventListener('mousemove', handleMove);
   }, []);
 
-  // Security & Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
         if (
@@ -236,45 +220,33 @@ const App: React.FC = () => {
     try {
         const client = getClient();
         
-        // Randomize the "Theme" of the roast to ensure variety (Lighter, funnier themes)
-        const themes = [
-            "Friendly bouncer at a club who says you're not on the list yet",
-            "Sarcastic but chill tech support saying 'Have you tried waiting?'",
-            "A mate poking fun at your impatience",
-            "Cheeky observation about how time flies when you're waiting",
-            "Lighthearted joke about needing a coffee break"
-        ];
-        const randomTheme = themes[Math.floor(Math.random() * themes.length)];
-
-        // Enhanced Prompt
         const promptText = `
-        Role: Specter (Cynical but charming Australian AI).
-        Task: Tease the user for trying to log in while locked out.
+        Task: Mock the user for trying to access a locked account.
         Time Remaining: ${timeLeft} minutes.
-        Theme: ${randomTheme}.
-        Tone: Humorous, lighthearted, cheeky, fun. NOT mean.
-        Format: Spoken text only. Short and punchy.
-        CRITICAL: 
-        1. YOU MUST MENTION the time remaining (${timeLeft} minutes) in your response.
-        2. Do NOT mention your name. Do NOT say 'Specter'. 
+        Style: Short, witty, slightly condescending but playful.
+        Rule: NEVER state your name. NEVER say "Specter".
+        Rule: DO NOT introduce yourself. Just speak the mock.
+        Rule: You must mention the ${timeLeft} minutes remaining.
         `;
 
         const response = await client.models.generateContent({
             model: 'gemini-2.5-flash-preview-tts',
-            contents: {
-                parts: [{ text: promptText }]
-            },
+            contents: { parts: [{ text: promptText }] },
             config: {
                 responseModalities: ['AUDIO'],
-                speechConfig: {
-                    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } }
-                }
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } }
             }
         });
         
         const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         if (audioData) {
-            const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            // Reuse persistent audio context
+            if (!roastAudioContextRef.current) {
+                roastAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+            }
+            const ctx = roastAudioContextRef.current;
+            if (ctx.state === 'suspended') await ctx.resume();
+
             const uint8 = decodeBase64(audioData);
             const buffer = await decodeAudioData(uint8, ctx);
             const source = ctx.createBufferSource();
@@ -283,17 +255,15 @@ const App: React.FC = () => {
             source.start();
         }
         
-        // Show actual error message after roast starts
         setTimeout(() => {
            setError(true);
-           setLoginErrorMsg(`ACCOUNT LOCKED. COOLDOWN: ${timeLeft} MINS.`);
+           setLoginErrorMsg(`LOCKED. COOLDOWN: ${timeLeft} MINS.`);
            setIsRoasting(false);
         }, 500);
 
     } catch (e) {
-        console.error("Roast failed", e);
         setError(true);
-        setLoginErrorMsg(`ACCOUNT LOCKED. COOLDOWN: ${timeLeft} MINS.`);
+        setLoginErrorMsg(`LOCKED. COOLDOWN: ${timeLeft} MINS.`);
         setIsRoasting(false);
     }
   };
@@ -305,18 +275,19 @@ const App: React.FC = () => {
 
     if (password === 'nsdadmin') {
         setIsDemoMode(false);
+        // FORCE CLEAR DEMO ARTIFACTS TO ENSURE LIMITLESS ACCESS
+        localStorage.removeItem('nsd_demo_count');
+        localStorage.removeItem('nsd_demo_lock_time');
         setViewState('TRANSITION');
     } else if (password === 'demo78') {
         const storedLockTime = localStorage.getItem('nsd_demo_lock_time');
         if (storedLockTime) {
              const diff = Date.now() - parseInt(storedLockTime);
-             const oneHour = 3600000;
-             if (diff < oneHour) {
-                 const minLeft = Math.ceil((oneHour - diff) / 60000);
+             if (diff < 3600000) {
+                 const minLeft = Math.ceil((3600000 - diff) / 60000);
                  await playRoast(minLeft);
                  return;
              } else {
-                 // Clean slate
                  localStorage.removeItem('nsd_demo_lock_time');
                  localStorage.setItem('nsd_demo_count', '0');
              }
@@ -333,7 +304,7 @@ const App: React.FC = () => {
       setViewState('LOGIN');
       setIsDemoMode(false);
       setError(true);
-      setLoginErrorMsg("DEMO SESSION EXPIRED (10/10). LOCKED FOR 1 HR.");
+      setLoginErrorMsg("DEMO EXPIRED (10/10). LOCKED 1 HR.");
   };
 
   return (
@@ -341,15 +312,12 @@ const App: React.FC = () => {
       className="relative min-h-screen bg-[#0a0a0a] text-white overflow-hidden selection:bg-red-900 selection:text-white no-select"
       onContextMenu={(e) => e.preventDefault()}
     >
-        
-        {/* GLOBAL BACKGROUND */}
         <div className="fixed inset-0 pointer-events-none">
             <div className="absolute inset-0 bg-animated-gradient-red opacity-30"></div>
             <div className="perspective-grid-floor opacity-40" style={{ transform: `perspective(500px) rotateX(60deg) translate(${mousePos.x * -20}px, ${mousePos.y * -20}px)` }}></div>
             <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0a] via-transparent to-[#0a0a0a]"></div>
         </div>
         
-        {/* PARTICLE SYSTEM */}
         <ParticleBackground mousePos={mousePos} />
 
         {viewState === 'INTRO' && <Intro onComplete={() => setViewState('BOOT')} />}
@@ -410,7 +378,6 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {/* FIXED FOOTER (GLOBAL) */}
         {viewState !== 'INTRO' && viewState !== 'BOOT' && (
             <div className="fixed bottom-0 left-0 right-0 h-10 bg-black/80 backdrop-blur border-t border-neutral-900 z-[60] flex items-center justify-between px-4 animate-slide-in-bottom" style={{ animationDelay: '0.5s' }}>
                 <div className="flex items-center gap-4">
@@ -430,13 +397,12 @@ const App: React.FC = () => {
                       className="text-neutral-500 hover:text-red-500 transition-colors"
                       title="Toggle System Terminal"
                     >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                     </button>
                 </div>
             </div>
         )}
 
-        {/* SYSTEM CONSOLE OVERLAY */}
         {isConsoleOpen && (
             <div className="fixed bottom-10 left-0 right-0 h-[300px] bg-black/95 border-t border-red-900/50 backdrop-blur-md z-[55] flex flex-col font-mono text-xs animate-slide-in-bottom">
                 <div className="flex items-center justify-between px-4 py-1 bg-red-900/20 border-b border-red-900/30 text-red-500">
