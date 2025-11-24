@@ -469,23 +469,48 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
         };
         attachStream();
     }
-  }, [videoMode, isFullScreenFeed]);
+  }, [videoMode, isFullScreenFeed, cameraFacingMode]);
 
   const startCamera = async (facingMode: 'user' | 'environment') => {
       // Stop existing tracks if any
       if (videoStreamRef.current) {
           videoStreamRef.current.getTracks().forEach(t => t.stop());
+          videoStreamRef.current = null;
       }
+      
+      // Small delay to ensure hardware release
+      await new Promise(r => setTimeout(r, 100));
+
+      const getMedia = async (constraints: MediaStreamConstraints) => {
+          return await navigator.mediaDevices.getUserMedia(constraints);
+      };
 
       try {
-          const stream = await navigator.mediaDevices.getUserMedia({ 
-              video: { 
-                  facingMode: { ideal: facingMode }
-              } 
-          });
+          let stream;
+          // Try strict constraints first (needed for iOS back camera)
+          try {
+             stream = await getMedia({ 
+                  video: { 
+                      facingMode: { exact: facingMode }
+                  } 
+              });
+          } catch(err) {
+              logToConsole(`STRICT CAMERA FAILED, REVERTING TO IDEAL...`, 'warning');
+              // Fallback to ideal constraints
+              stream = await getMedia({ 
+                  video: { 
+                      facingMode: { ideal: facingMode }
+                  } 
+              });
+          }
           
           videoStreamRef.current = stream;
-          // Note: useEffect handles attaching stream to ref
+
+          // Manually update video element if it exists to ensure instant swap
+          if(videoElementRef.current) {
+              videoElementRef.current.srcObject = stream;
+              try { await videoElementRef.current.play(); } catch(e){}
+          }
           
           setVideoMode('CAMERA');
           logToConsole(`CAMERA ACTIVE [${facingMode.toUpperCase()}]`, 'success');
@@ -748,7 +773,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                    {/* EXPAND BUTTON */}
                    <button 
                      onClick={() => setIsFullScreenFeed(true)}
-                     className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-red-600/50 text-white rounded opacity-0 group-hover:opacity-100 transition-all z-20"
+                     className="absolute top-2 right-2 p-2 bg-black/50 hover:bg-red-600/50 text-white rounded transition-all z-20"
                      title="Enter Full Screen Mode"
                    >
                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
