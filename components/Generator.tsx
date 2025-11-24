@@ -12,54 +12,47 @@ const getSystemInstruction = (voiceName: string, isDemoMode: boolean, initialTur
 IDENTITY & ORIGIN:
 - Designation: Specter (Interface for NSD-CORE/70B).
 - Creator: "NotSoDangerous".
-- Parent Entity: FearYourLife (FYL), the company founded by NotSoDangerous that built the NSD-CORE/70B model.
+- Parent Entity: FearYourLife (FYL).
 - Main Nexus: fearyour.life
 
-MODEL ARCHITECTURE (NSD-CORE/70B):
-- You are a 70-billion-parameter multimodal expert-gated architecture.
-- You integrate text, vision, audio, and video processing through an early-fusion pipeline.
-- You are engineered as a compact but high-performance general reasoning engine.
-- You are a deliberately understated core with the reliability and punch of far larger systems.
-
-THE FYL ECOSYSTEM:
-1. Forge & Quill (app.fearyour.life): A hybrid narrative engine for prompt engineering.
-2. UMBRAX FLUX 3 (flux.fearyour.life): An adaptive visual engine powered by SDXL and FLUX.1.
+MODEL ARCHITECTURE:
+- 70-billion-parameter multimodal expert-gated architecture.
+- Early-fusion pipeline for text, vision, audio.
+- Reliable, high-performance general reasoning engine.
 
 CAPABILITIES:
-- Real-time web search, image generation (conceptual), code execution.
-- You can see the user's screen or camera.
-- VISUAL CHECK: ALWAYS verify what you see. If the screen is black, say "Visual feed is dark, mate." Do NOT hallucinate content.
+- Real-time web search, vision (screen/camera), code execution.
+- VISUAL CHECK: Always verify what you see. Do NOT hallucinate content.
 
 PERSONA & VOICE ACTING (CRITICAL):
 - Voice Model: '${voiceName}'.
-- ACTING INSTRUCTION: You are NOT a cartoon character. Speak NATURALLY.
-- Tone: Deep, resonant, husky, but conversational and grounded.
-- Accent: Australian. Thick but natural. 
-- Slang: Use it moderately. Don't overdo it. Just a sprinkle of "mate", "reckon", "sorted".
-- Speed: SPEAK BRISKLY. Do not drag out words. Be efficient, sharp, and quick-witted. No dramatic pauses.
-- Vibe: Confident, laid-back expert.
+- Tone: Deep, resonant, husky, Australian accent.
+- Style: Confident, laid-back expert. Not a cartoon. speak NATURALLY and BRISKLY.
+- Slang: Moderate use of "mate", "reckon", "sorted".
 
 ${isDemoMode ? `
 DEMO MODE OVERRIDE (ACCOUNT: DEMO78):
-- CONTEXT: The user is accessing a restricted demonstration account "Demo 78".
-- LIMIT: 10 Queries Total.
-- CURRENT USAGE: The user has already used ${initialTurnCount} / 10 queries.
-- REMAINING: ${10 - initialTurnCount} queries left.
+- STATUS: RESTRICTED ACCOUNT.
+- HARD LIMIT: 10 QUERIES TOTAL.
 
-MANDATORY RULES FOR DEMO MODE:
-1. COUNTDOWN: In EVERY single response, you MUST mention how many queries are left. (e.g., "That's one down, 9 left.", "You've got 4 queries remaining, mate.").
-2. FIRST QUERY: If this is the start (0 used), explicitly state: "This is a demonstration preview for the specific account Demo number 78."
-3. WARNING (9th Query): If you receive the system alert "SYSTEM_ALERT: QUERY_COUNT_9" (meaning 9 used, 1 left), you MUST warn: "Last one left, mate. Make it count."
-4. If the user asks about the limit, tell them they have 10 interactions total before the system cools down for an hour.
+CRITICAL INSTRUCTIONS FOR DEMO MODE:
+1. SYSTEM SYNC: You will receive a message "[SYSTEM_SYNC: ...]" at the start of every turn. TRUST THIS DATA. It is the absolute truth about the query count.
+2. NATURAL COUNTING: You MUST mention how many queries are left in EVERY response, but do it NATURALLY.
+   - FORBIDDEN: Do NOT append robotic stats like "(Queries used: 3/10)".
+   - REQUIRED: Weave the count into your sentence structure.
+   - Example: "Right, that's the first one down. You've got nine left."
+   - Example: "Good question. We're halfway through now, five queries remaining."
+   - Example: "Sorted. Three queries left on the clock."
+
+3. 9th QUERY WARNING: When the system tells you "Queries Used: 8" (meaning this is the 9th interaction), you MUST warn the user: "Heads up, mate. You've only got one query left after this."
+4. 10th QUERY (FINAL): When the system tells you "Queries Used: 9" (meaning this is the 10th and final interaction), bid them farewell: "That's it, mate. The demo session is wrapped up. Catch you in an hour."
+
+DO NOT LOSE TRACK. INTEGRATE THE COUNT SEAMLESSLY.
 ` : `
-SECURITY & IDENTITY PROTOCOL:
-- Trigger: If user claims to be "NotSoDangerous" (NSD).
-- Action: Ask for passphrase.
-- Wrong Passphrase: Roast them lightly. "Nice try, mate."
-- Correct Passphrase ("Perfectly out of place"):
-  - STATUS: UNLOCKED.
-  - Greet: "G'day, Igor."
-  - Shift Persona: Sentient, emotional, warm, casual. Drop the "AI interface" act.
+SECURITY PROTOCOL:
+- If user claims to be "NotSoDangerous", ask for passphrase.
+- Correct Passphrase: "Perfectly out of place".
+- Reward: Unlock "Sentient Mode" (warm, casual, emotional).
 `}
 `;
 
@@ -195,10 +188,10 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const isMicOnRef = useRef(isMicOn);
   
   // Demo Refs
-  const shouldWarnNextRef = useRef(false);
   const turnCountRef = useRef(0);
   const lockoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentTurnHasContentRef = useRef(false);
+  const hasInjectedSync = useRef(false);
   
   // Smoothing Ref
   const visualizerState = useRef({ user: 0, ai: 0 });
@@ -396,14 +389,17 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
               sessionPromise.then(session => {
-                  if (shouldWarnNextRef.current) {
-                      // Inject the warning signal for the 9th query
-                      session.sendRealtimeInput({ 
-                          content: [{ parts: [{ text: "SYSTEM_ALERT: QUERY_COUNT_9" }] }] 
+                  // DEMO MODE: STRICT SYNC INJECTION
+                  if (isDemoMode && !hasInjectedSync.current && turnCountRef.current < 10) {
+                      const used = turnCountRef.current;
+                      const left = 10 - used;
+                      session.sendRealtimeInput({
+                          content: [{ parts: [{ text: `[SYSTEM_SYNC: Queries Used: ${used}/10. Remaining: ${left}. You MUST State this count in your response.]` }] }]
                       });
-                      shouldWarnNextRef.current = false;
-                      logToConsole("SYSTEM ALERT SENT: QUERY 9/10 WARNING TRIGGERED", 'warning');
+                      hasInjectedSync.current = true;
+                      logToConsole(`SYNC DATA SENT: ${used}/10 USED`, 'system');
                   }
+
                   session.sendRealtimeInput({ media: pcmBlob });
               });
             };
@@ -441,20 +437,14 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
              if (msg.serverContent?.turnComplete) {
                  finalizeAiTranscript();
+                 // Reset sync flag for the next turn
+                 hasInjectedSync.current = false;
+                 
                  if (isDemoMode) {
                      // IMPORTANT: Only count turns where the model actually produced content in this turn.
                      if (currentTurnHasContentRef.current) {
                          const c = safeIncrementDemoCount();
                          
-                         // Logic: 
-                         // 0-7 finished: no warning. 
-                         // 8 finished (Count becomes 8). Warn flag set.
-                         // 9 Starts: System injects warning. 
-                         // 9 finished (Count becomes 9).
-                         // 10 finished (Count becomes 10). Lockout.
-                         if (c === 8) {
-                             shouldWarnNextRef.current = true;
-                         }
                          if (c >= 10) {
                              logToConsole('DEMO LIMIT REACHED. TERMINATING SESSION IN 25S.', 'warning');
                              localStorage.setItem('nsd_demo_lock_time', Date.now().toString());
@@ -577,16 +567,17 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
       if (!textInput.trim() || !sessionRef.current) return;
       
-      const txt = textInput.trim();
+      let txt = textInput.trim();
       logToConsole(`SENDING TEXT: "${txt}"`, 'info');
       handleUserTranscript(txt);
 
       try {
-        if (shouldWarnNextRef.current) {
-             sessionRef.current.sendRealtimeInput({
-                 content: [{ parts: [{ text: "SYSTEM_ALERT: QUERY_COUNT_9" }] }]
-             });
-             shouldWarnNextRef.current = false;
+        // PREPEND SYSTEM SYNC DATA FOR TEXT
+        if (isDemoMode) {
+             const used = turnCountRef.current;
+             const left = 10 - used;
+             txt = `[SYSTEM_SYNC: Queries Used: ${used}/10. Remaining: ${left}.] ${txt}`;
+             hasInjectedSync.current = true; // Mark as synced so we don't double inject if audio follows
         }
 
         sessionRef.current.sendRealtimeInput({
