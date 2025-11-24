@@ -1,7 +1,8 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import Intro from './components/Intro';
 import Generator from './components/Generator';
+import { getClient } from './services/geminiService';
+import { decodeBase64, decodeAudioData } from './services/audioUtils';
 
 // --- PARTICLE SYSTEM ---
 const ParticleBackground: React.FC<{ mousePos: {x: number, y: number} }> = ({ mousePos }) => {
@@ -120,6 +121,9 @@ const App: React.FC = () => {
   const [viewState, setViewState] = useState<'INTRO' | 'BOOT' | 'LOGIN' | 'TRANSITION' | 'APP'>('INTRO');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
+  const [loginErrorMsg, setLoginErrorMsg] = useState<string | null>(null);
+  const [isRoasting, setIsRoasting] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   
   // Console State (Global)
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
@@ -163,11 +167,17 @@ const App: React.FC = () => {
           logToConsole('--- SYSTEM COMMANDS ---', 'system');
           logToConsole('help             : Display available commands', 'info');
           logToConsole('clear            : Clear terminal output', 'info');
-          logToConsole('voice [name]     : Set voice identity', 'info');
-          logToConsole('                   Options: Puck, Charon, Kore, Fenrir, Zephyr', 'info');
-          logToConsole('                   Example: "voice Fenrir"', 'info');
+          logToConsole('voice [name]     : Set voice identity (Puck, Charon, etc)', 'info');
+          logToConsole('override_demo    : Reset demo cooldown and counters', 'warning');
       } else if (command === 'clear') {
           setConsoleLogs([]);
+      } else if (command === 'override_demo') {
+          localStorage.removeItem('nsd_demo_lock_time');
+          localStorage.setItem('nsd_demo_count', '0');
+          setLoginErrorMsg(null);
+          logToConsole('DEMO LOCKS FLUSHED. COUNTER RESET.', 'success');
+          // If we are currently in demo mode, this won't update the running generator instantly
+          // without a complex refactor, but it allows the user to refresh/re-login.
       } else if (command === 'voice' || command === 'set_voice') {
           if (args.length === 0) {
               logToConsole(`CURRENT VOICE: ${currentVoice}`, 'info');
@@ -219,14 +229,111 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const handleLogin = (e: React.FormEvent) => {
+  // --- DEMO MODE LOCKOUT LOGIC ---
+  const playRoast = async (timeLeft: number) => {
+    setIsRoasting(true);
+    setLoginErrorMsg("SECURITY PROTOCOLS ENGAGED... ANALYZING...");
+    try {
+        const client = getClient();
+        
+        // Randomize the "Theme" of the roast to ensure variety (Lighter, funnier themes)
+        const themes = [
+            "Friendly bouncer at a club who says you're not on the list yet",
+            "Sarcastic but chill tech support saying 'Have you tried waiting?'",
+            "A mate poking fun at your impatience",
+            "Cheeky observation about how time flies when you're waiting",
+            "Lighthearted joke about needing a coffee break"
+        ];
+        const randomTheme = themes[Math.floor(Math.random() * themes.length)];
+
+        // Enhanced Prompt
+        const promptText = `
+        Role: Specter (Cynical but charming Australian AI).
+        Task: Tease the user for trying to log in while locked out.
+        Time Remaining: ${timeLeft} minutes.
+        Theme: ${randomTheme}.
+        Tone: Humorous, lighthearted, cheeky, fun. NOT mean.
+        Format: Spoken text only. Short and punchy.
+        CRITICAL: 
+        1. YOU MUST MENTION the time remaining (${timeLeft} minutes) in your response.
+        2. Do NOT mention your name. Do NOT say 'Specter'. 
+        `;
+
+        const response = await client.models.generateContent({
+            model: 'gemini-2.5-flash-preview-tts',
+            contents: {
+                parts: [{ text: promptText }]
+            },
+            config: {
+                responseModalities: ['AUDIO'],
+                speechConfig: {
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } }
+                }
+            }
+        });
+        
+        const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (audioData) {
+            const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const uint8 = decodeBase64(audioData);
+            const buffer = await decodeAudioData(uint8, ctx);
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(ctx.destination);
+            source.start();
+        }
+        
+        // Show actual error message after roast starts
+        setTimeout(() => {
+           setError(true);
+           setLoginErrorMsg(`ACCOUNT LOCKED. COOLDOWN: ${timeLeft} MINS.`);
+           setIsRoasting(false);
+        }, 500);
+
+    } catch (e) {
+        console.error("Roast failed", e);
+        setError(true);
+        setLoginErrorMsg(`ACCOUNT LOCKED. COOLDOWN: ${timeLeft} MINS.`);
+        setIsRoasting(false);
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginErrorMsg(null);
+    setError(false);
+
     if (password === 'nsdadmin') {
+        setIsDemoMode(false);
+        setViewState('TRANSITION');
+    } else if (password === 'demo78') {
+        const storedLockTime = localStorage.getItem('nsd_demo_lock_time');
+        if (storedLockTime) {
+             const diff = Date.now() - parseInt(storedLockTime);
+             const oneHour = 3600000;
+             if (diff < oneHour) {
+                 const minLeft = Math.ceil((oneHour - diff) / 60000);
+                 await playRoast(minLeft);
+                 return;
+             } else {
+                 // Clean slate
+                 localStorage.removeItem('nsd_demo_lock_time');
+                 localStorage.setItem('nsd_demo_count', '0');
+             }
+        }
+        setIsDemoMode(true);
         setViewState('TRANSITION');
     } else {
         setError(true);
         setPassword('');
     }
+  };
+
+  const handleDemoLockout = () => {
+      setViewState('LOGIN');
+      setIsDemoMode(false);
+      setError(true);
+      setLoginErrorMsg("DEMO SESSION EXPIRED (10/10). LOCKED FOR 1 HR.");
   };
 
   return (
@@ -263,17 +370,26 @@ const App: React.FC = () => {
                         <input 
                           type="password" 
                           value={password}
-                          onChange={e => { setPassword(e.target.value); setError(false); }}
+                          onChange={e => { setPassword(e.target.value); setError(false); setLoginErrorMsg(null); }}
                           placeholder="••••••••"
                           className={`bg-neutral-900 border ${error ? 'border-red-500 animate-pulse' : 'border-neutral-700 focus:border-red-600'} rounded px-4 py-3 text-center tracking-[0.5em] outline-none transition-colors`}
                           autoFocus
+                          disabled={isRoasting}
                         />
-                        <button type="submit" className="bg-red-900/30 hover:bg-red-600 border border-red-600 text-red-500 hover:text-white py-3 rounded uppercase text-xs font-bold tracking-widest transition-all">
-                            Authenticate
+                        <button 
+                          type="submit" 
+                          disabled={isRoasting}
+                          className={`bg-red-900/30 border border-red-600 text-red-500 py-3 rounded uppercase text-xs font-bold tracking-widest transition-all ${isRoasting ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-600 hover:text-white'}`}
+                        >
+                            {isRoasting ? 'ANALYZING...' : 'Authenticate'}
                         </button>
                     </form>
-                    <div className="mt-8 text-[10px] text-neutral-600 font-mono">
-                        SECURE TERMINAL // UNAUTHORIZED ACCESS IS PROHIBITED
+                    <div className="mt-8 text-[10px] text-neutral-600 font-mono text-center min-h-[1.5em]">
+                        {loginErrorMsg ? (
+                            <span className={`text-red-500 font-bold ${isRoasting ? 'animate-pulse' : ''}`}>{loginErrorMsg}</span>
+                        ) : (
+                            "SECURE TERMINAL // UNAUTHORIZED ACCESS IS PROHIBITED"
+                        )}
                     </div>
                 </div>
             </div>
@@ -288,6 +404,8 @@ const App: React.FC = () => {
                   isConsoleOpen={isConsoleOpen} 
                   logToConsole={logToConsole} 
                   voiceName={currentVoice}
+                  isDemoMode={isDemoMode}
+                  onDemoLockout={handleDemoLockout}
                 />
             </div>
         )}
@@ -296,9 +414,9 @@ const App: React.FC = () => {
         {viewState !== 'INTRO' && viewState !== 'BOOT' && (
             <div className="fixed bottom-0 left-0 right-0 h-10 bg-black/80 backdrop-blur border-t border-neutral-900 z-[60] flex items-center justify-between px-4 animate-slide-in-bottom" style={{ animationDelay: '0.5s' }}>
                 <div className="flex items-center gap-4">
-                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_#22c55e]"></div>
-                    <span className="text-[10px] font-mono text-neutral-500 tracking-widest">
-                        SYSTEM READY | MODEL: NSD-SPECTER_VISION 3.5
+                    <div className={`w-2 h-2 rounded-full animate-pulse shadow-[0_0_10px] ${isDemoMode ? 'bg-yellow-500 shadow-yellow-500' : 'bg-green-500 shadow-green-500'}`}></div>
+                    <span className={`text-[10px] font-mono tracking-widest ${isDemoMode ? 'text-yellow-500' : 'text-neutral-500'}`}>
+                        {isDemoMode ? "DEMO MODE ACTIVE | ACCOUNT: DEMO78" : "SYSTEM READY | MODEL: NSD-SPECTER_VISION 3.5"}
                     </span>
                 </div>
                 

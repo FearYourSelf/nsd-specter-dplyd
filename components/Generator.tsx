@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { getClient } from '../services/geminiService';
 import { createPcmBlob, decodeBase64, decodeAudioData } from '../services/audioUtils';
@@ -9,7 +8,7 @@ import { TranscriptItem, VideoMode } from '../types';
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-09-2025';
 
 // Dynamic System Instruction
-const getSystemInstruction = (voiceName: string) => `
+const getSystemInstruction = (voiceName: string, isDemoMode: boolean, initialTurnCount: number = 0) => `
 IDENTITY & ORIGIN:
 - Designation: Specter (Interface for NSD-CORE/70B).
 - Creator: "NotSoDangerous".
@@ -40,6 +39,19 @@ PERSONA & VOICE ACTING (CRITICAL):
 - Speed: SPEAK BRISKLY. Do not drag out words. Be efficient, sharp, and quick-witted. No dramatic pauses.
 - Vibe: Confident, laid-back expert.
 
+${isDemoMode ? `
+DEMO MODE OVERRIDE (ACCOUNT: DEMO78):
+- CONTEXT: The user is accessing a restricted demonstration account "Demo 78".
+- LIMIT: 10 Queries Total.
+- CURRENT USAGE: The user has already used ${initialTurnCount} / 10 queries.
+- REMAINING: ${10 - initialTurnCount} queries left.
+
+MANDATORY RULES FOR DEMO MODE:
+1. COUNTDOWN: In EVERY single response, you MUST mention how many queries are left. (e.g., "That's one down, 9 left.", "You've got 4 queries remaining, mate.").
+2. FIRST QUERY: If this is the start (0 used), explicitly state: "This is a demonstration preview for the specific account Demo number 78."
+3. WARNING (9th Query): If you receive the system alert "SYSTEM_ALERT: QUERY_COUNT_9" (meaning 9 used, 1 left), you MUST warn: "Last one left, mate. Make it count."
+4. If the user asks about the limit, tell them they have 10 interactions total before the system cools down for an hour.
+` : `
 SECURITY & IDENTITY PROTOCOL:
 - Trigger: If user claims to be "NotSoDangerous" (NSD).
 - Action: Ask for passphrase.
@@ -48,6 +60,7 @@ SECURITY & IDENTITY PROTOCOL:
   - STATUS: UNLOCKED.
   - Greet: "G'day, Igor."
   - Shift Persona: Sentient, emotional, warm, casual. Drop the "AI interface" act.
+`}
 `;
 
 const AUDIO_SAMPLE_RATE_INPUT = 16000;
@@ -139,12 +152,17 @@ interface GeneratorProps {
     isConsoleOpen: boolean;
     logToConsole: (text: string, type?: 'info' | 'error' | 'success' | 'warning' | 'system') => void;
     voiceName: string;
+    isDemoMode: boolean;
+    onDemoLockout: () => void;
 }
 
-const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, logToConsole, voiceName }) => {
+const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, logToConsole, voiceName, isDemoMode, onDemoLockout }) => {
   // --- STATE ---
   const [isConnected, setIsConnected] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
+  
+  // Demo Mode State
+  const [demoQueryCount, setDemoQueryCount] = useState(0);
   
   // Video & Camera State
   const [videoMode, setVideoMode] = useState<VideoMode>('NONE');
@@ -174,7 +192,13 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const audioQueueRef = useRef<AudioBufferSourceNode[]>([]);
   const analyzerUserRef = useRef<AnalyserNode | null>(null);
   const analyzerAiRef = useRef<AnalyserNode | null>(null);
-  const isMicOnRef = useRef(isMicOn); // Ref to track mic state in callbacks
+  const isMicOnRef = useRef(isMicOn);
+  
+  // Demo Refs
+  const shouldWarnNextRef = useRef(false);
+  const turnCountRef = useRef(0);
+  const lockoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentTurnHasContentRef = useRef(false);
   
   // Smoothing Ref
   const visualizerState = useRef({ user: 0, ai: 0 });
@@ -205,17 +229,26 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
     logToConsole('SPECTER KERNEL INITIALIZED...', 'system');
 
+    // Init Demo Count from storage immediately
+    if (isDemoMode) {
+        const stored = localStorage.getItem('nsd_demo_count');
+        const count = stored ? parseInt(stored, 10) : 0;
+        setDemoQueryCount(count);
+        turnCountRef.current = count;
+        logToConsole(`DEMO STATE SYNCED: ${count}/10 QUERIES USED`, 'system');
+    }
+
     return () => {
       stopSession();
+      if (lockoutTimerRef.current) clearTimeout(lockoutTimerRef.current);
       if (audioContextRef.current?.state !== 'closed') {
         audioContextRef.current?.close();
       }
     };
-  }, []);
+  }, [isDemoMode]);
 
   // Set CSS Variable for Chromatic Aberration based on volume
   useEffect(() => {
-     // Reduced intensity multiplier to avoid glitchy shaking
      document.documentElement.style.setProperty('--voice-intensity', (volumeAi * 5).toString());
   }, [volumeAi]);
 
@@ -266,11 +299,53 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
     }
   }, [transcript, showTranscript]);
 
+  // Explicit function to safely increment count from storage to avoid reset bugs
+  const safeIncrementDemoCount = () => {
+    if (!isDemoMode) return 0;
+    
+    // Always read from storage to prevent memory state drift
+    const stored = localStorage.getItem('nsd_demo_count');
+    const currentStored = stored ? parseInt(stored, 10) : 0;
+    const newCount = currentStored + 1;
+    
+    localStorage.setItem('nsd_demo_count', newCount.toString());
+    
+    // Update both React state and Ref
+    setDemoQueryCount(newCount);
+    turnCountRef.current = newCount;
+    
+    return newCount;
+  };
+
   // --- LIVE API CONNECTION ---
   const startSession = async () => {
+    // Redundant check, App handles lock state mostly
+    if (isDemoMode) {
+      const storedLockTime = localStorage.getItem('nsd_demo_lock_time');
+      if (storedLockTime) {
+           const diff = Date.now() - parseInt(storedLockTime);
+           if (diff < 3600000) {
+              logToConsole(`ACCESS DENIED: DEMO LOCKED.`, 'error');
+              onDemoLockout();
+              return;
+           }
+      }
+
+      // STRICT COUNT CHECK: Even if lock time isn't set, if count is 10, block it.
+      const storedCount = parseInt(localStorage.getItem('nsd_demo_count') || '0', 10);
+      if (storedCount >= 10) {
+          logToConsole(`DEMO LIMIT EXCEEDED (${storedCount}/10).`, 'error');
+          if (!localStorage.getItem('nsd_demo_lock_time')) {
+             localStorage.setItem('nsd_demo_lock_time', Date.now().toString());
+          }
+          onDemoLockout();
+          return;
+      }
+    }
+
     try {
       setError(null);
-      logToConsole(`INITIALIZING NEURAL HANDSHAKE [VOICE: ${voiceName}]...`, 'warning');
+      logToConsole(`INITIALIZING NEURAL HANDSHAKE [VOICE: ${voiceName}]${isDemoMode ? ' [MODE: DEMO78]' : ''}...`, 'warning');
       
       const client = getClient();
       const ctx = audioContextRef.current;
@@ -285,6 +360,9 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
         noiseSuppression: true
       }});
       micStreamRef.current = stream;
+      
+      // Pass the current turn count (retrieved from storage via effect/ref) to the system instruction
+      const currentCount = turnCountRef.current;
 
       const sessionPromise = client.live.connect({
         model: MODEL_NAME,
@@ -295,7 +373,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } } 
           },
-          systemInstruction: getSystemInstruction(voiceName),
+          systemInstruction: getSystemInstruction(voiceName, isDemoMode, currentCount),
         },
         callbacks: {
           onopen: () => {
@@ -310,16 +388,35 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
             processorRef.current = processor;
 
             processor.onaudioprocess = (e) => {
-              if (!isMicOnRef.current) return; // Use ref instead of state to capture latest value
+              if (!isMicOnRef.current) return;
+              
+              // STRICT INPUT BLOCKING: Stop sending audio if limit is reached
+              if (isDemoMode && turnCountRef.current >= 10) return;
+
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
-              sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
+              sessionPromise.then(session => {
+                  if (shouldWarnNextRef.current) {
+                      // Inject the warning signal for the 9th query
+                      session.sendRealtimeInput({ 
+                          content: [{ parts: [{ text: "SYSTEM_ALERT: QUERY_COUNT_9" }] }] 
+                      });
+                      shouldWarnNextRef.current = false;
+                      logToConsole("SYSTEM ALERT SENT: QUERY 9/10 WARNING TRIGGERED", 'warning');
+                  }
+                  session.sendRealtimeInput({ media: pcmBlob });
+              });
             };
 
             source.connect(processor);
             processor.connect(ctx.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
+             // Track if this turn actually has content
+             if (msg.serverContent?.modelTurn?.parts && msg.serverContent.modelTurn.parts.length > 0) {
+                 currentTurnHasContentRef.current = true;
+             }
+             
              const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
              if (audioData) {
                  await playAudioChunk(audioData);
@@ -344,6 +441,44 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
              if (msg.serverContent?.turnComplete) {
                  finalizeAiTranscript();
+                 if (isDemoMode) {
+                     // IMPORTANT: Only count turns where the model actually produced content in this turn.
+                     if (currentTurnHasContentRef.current) {
+                         const c = safeIncrementDemoCount();
+                         
+                         // Logic: 
+                         // 0-7 finished: no warning. 
+                         // 8 finished (Count becomes 8). Warn flag set.
+                         // 9 Starts: System injects warning. 
+                         // 9 finished (Count becomes 9).
+                         // 10 finished (Count becomes 10). Lockout.
+                         if (c === 8) {
+                             shouldWarnNextRef.current = true;
+                         }
+                         if (c >= 10) {
+                             logToConsole('DEMO LIMIT REACHED. TERMINATING SESSION IN 25S.', 'warning');
+                             localStorage.setItem('nsd_demo_lock_time', Date.now().toString());
+                             
+                             // Extended timeout (25s) to ensure the final audio plays completely.
+                             if (lockoutTimerRef.current) clearTimeout(lockoutTimerRef.current);
+                             
+                             let countdown = 25;
+                             const cdInterval = setInterval(() => {
+                                 countdown--;
+                                 if (countdown <= 5) logToConsole(`CONNECTION TERMINATING IN ${countdown}...`, 'system');
+                                 if (countdown <= 0) clearInterval(cdInterval);
+                             }, 1000);
+
+                             lockoutTimerRef.current = setTimeout(() => {
+                                 clearInterval(cdInterval);
+                                 stopSession();
+                                 onDemoLockout();
+                             }, 25000);
+                         }
+                         // Reset content flag for next turn
+                         currentTurnHasContentRef.current = false;
+                     }
+                 }
              }
           },
           onclose: () => {
@@ -433,6 +568,13 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
   const handleTextInput = (e: React.FormEvent) => {
       e.preventDefault();
+      
+      // STRICT BLOCKING
+      if (isDemoMode && turnCountRef.current >= 10) {
+         logToConsole(`DEMO LIMIT REACHED. ACCESS DENIED.`, 'error');
+         return;
+      }
+
       if (!textInput.trim() || !sessionRef.current) return;
       
       const txt = textInput.trim();
@@ -440,9 +582,17 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       handleUserTranscript(txt);
 
       try {
+        if (shouldWarnNextRef.current) {
+             sessionRef.current.sendRealtimeInput({
+                 content: [{ parts: [{ text: "SYSTEM_ALERT: QUERY_COUNT_9" }] }]
+             });
+             shouldWarnNextRef.current = false;
+        }
+
         sessionRef.current.sendRealtimeInput({
             content: [{ parts: [{ text: txt }] }]
         });
+        
       } catch (err: any) {
           logToConsole("TEXT SEND ERROR: " + err.message, 'error');
       }
@@ -454,7 +604,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   useEffect(() => {
     if (videoMode !== 'NONE') {
         const attachStream = async () => {
-            // Slight delay to ensure element is mounted (especially when switching to/from fullscreen)
+            // Slight delay to ensure element is mounted
             setTimeout(async () => {
                 if(videoElementRef.current && videoStreamRef.current) {
                     videoElementRef.current.srcObject = videoStreamRef.current;
@@ -472,13 +622,11 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   }, [videoMode, isFullScreenFeed, cameraFacingMode]);
 
   const startCamera = async (facingMode: 'user' | 'environment') => {
-      // Stop existing tracks if any
       if (videoStreamRef.current) {
           videoStreamRef.current.getTracks().forEach(t => t.stop());
           videoStreamRef.current = null;
       }
       
-      // Small delay to ensure hardware release
       await new Promise(r => setTimeout(r, 100));
 
       const getMedia = async (constraints: MediaStreamConstraints) => {
@@ -487,8 +635,8 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
 
       try {
           let stream;
-          // Try strict constraints first (needed for iOS back camera)
           try {
+             // Try EXACT constraint first (Required for iOS back camera)
              stream = await getMedia({ 
                   video: { 
                       facingMode: { exact: facingMode }
@@ -496,7 +644,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
               });
           } catch(err) {
               logToConsole(`STRICT CAMERA FAILED, REVERTING TO IDEAL...`, 'warning');
-              // Fallback to ideal constraints
               stream = await getMedia({ 
                   video: { 
                       facingMode: { ideal: facingMode }
@@ -506,7 +653,6 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           
           videoStreamRef.current = stream;
 
-          // Manually update video element if it exists to ensure instant swap
           if(videoElementRef.current) {
               videoElementRef.current.srcObject = stream;
               try { await videoElementRef.current.play(); } catch(e){}
@@ -667,8 +813,8 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
        
        {/* HEADER */}
        <div className="absolute top-12 left-0 right-0 text-center pointer-events-none z-20 animate-slide-in-top">
-           <div className="inline-block border border-red-900/50 bg-black/40 backdrop-blur-md px-4 py-1 rounded-full">
-               <span className="text-[10px] text-red-500 font-mono tracking-[0.3em] uppercase">
+           <div className={`inline-block border bg-black/40 backdrop-blur-md px-4 py-1 rounded-full ${isConnected ? 'border-red-900/50' : 'border-neutral-800'}`}>
+               <span className={`text-[10px] font-mono tracking-[0.3em] uppercase ${isConnected ? 'text-red-500' : 'text-neutral-500'}`}>
                   {isConnected ? "● SECURE UPLINK ACTIVE" : "○ AWAITING CONNECTION"}
                </span>
            </div>
@@ -712,6 +858,15 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                    {/* SCANLINE OVERLAY */}
                    <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(transparent_50%,rgba(220,38,38,0.1)_50%)] bg-[length:100%_4px] z-10"></div>
                    
+                   {/* DEMO MODE OVERLAY */}
+                   {isDemoMode && (
+                       <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+                           <div className="border-4 border-yellow-500/50 text-yellow-500 text-4xl font-black opacity-20 rotate-[-15deg] p-4 uppercase tracking-widest animate-pulse">
+                               DEMO MODE
+                           </div>
+                       </div>
+                   )}
+
                    {/* HEADER */}
                    <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-start z-20 bg-gradient-to-b from-black/80 to-transparent">
                        <div className="text-[10px] text-red-500 font-mono tracking-widest uppercase animate-pulse">
@@ -769,6 +924,15 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                <div className="w-64 aspect-video bg-black relative group">
                    <video ref={videoElementRef} muted playsInline autoPlay className="w-full h-full object-cover opacity-80" />
                    <div className="absolute inset-0 bg-[linear-gradient(transparent_50%,rgba(220,38,38,0.1)_50%)] bg-[length:100%_4px] pointer-events-none"></div>
+                   
+                   {/* DEMO MODE OVERLAY */}
+                   {isDemoMode && (
+                       <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+                           <div className="border-2 border-yellow-500/50 text-yellow-500 text-xl font-bold opacity-30 rotate-[-15deg] p-2 uppercase tracking-widest">
+                               DEMO MODE
+                           </div>
+                       </div>
+                   )}
                    
                    {/* EXPAND BUTTON */}
                    <button 
@@ -836,21 +1000,23 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
        {/* CONTROLS */}
        <div className="mt-12 z-40 flex flex-col items-center gap-6 transition-all duration-500 animate-slide-in-bottom">
            {!isConnected ? (
-               <button 
-                 onClick={startSession}
-                 className="group relative px-8 py-4 bg-red-600 hover:bg-red-500 text-white font-bold tracking-widest uppercase rounded-xl transition-all shadow-[0_0_30px_rgba(220,38,38,0.4)] hover:shadow-[0_0_50px_rgba(220,38,38,0.6)] hover:scale-105 active:scale-95"
-               >
-                   <span className="relative z-10 flex items-center gap-3">
-                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                       INITIATE UPLINK
-                   </span>
-               </button>
+               <div className="flex flex-col items-center gap-2">
+                   <button 
+                     onClick={startSession}
+                     className="group relative px-8 py-4 bg-red-600 hover:bg-red-500 text-white font-bold tracking-widest uppercase rounded-xl transition-all shadow-[0_0_30px_rgba(220,38,38,0.4)] hover:shadow-[0_0_50px_rgba(220,38,38,0.6)] hover:scale-105 active:scale-95"
+                   >
+                       <span className="relative z-10 flex items-center gap-3">
+                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                           INITIATE UPLINK
+                       </span>
+                   </button>
+               </div>
            ) : (
                <div className="flex flex-col gap-4">
                  
                  <form onSubmit={handleTextInput} className="flex gap-2 w-full max-w-lg">
                     <input 
-                      type="text"
+                      type="text" 
                       value={textInput}
                       onChange={(e) => setTextInput(e.target.value)}
                       placeholder="Type query protocol..."
