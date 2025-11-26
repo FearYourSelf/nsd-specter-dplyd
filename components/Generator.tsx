@@ -240,6 +240,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
   const inputSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const inputGainRef = useRef<GainNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
@@ -411,14 +412,26 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
             setIsConnected(true);
             logToConsole("UPLINK SECURE", 'success');
             
+            // --- AUDIO PIPELINE SETUP ---
             const source = inputCtx.createMediaStreamSource(stream);
             inputSourceRef.current = source;
-            source.connect(analyzerUserRef.current!);
+            
+            // Create Gain Node for microphone boost
+            // Boosting input allows the model to detect quieter speech and short phrases better
+            const gainNode = inputCtx.createGain();
+            gainNode.gain.value = 5.0; // 500% Volume boost for max sensitivity
+            inputGainRef.current = gainNode;
+
+            source.connect(gainNode);
+            gainNode.connect(analyzerUserRef.current!);
             
             // Script Processor
-            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+            // Reduced buffer size (2048) lowers latency to capture short phrases better
+            const processor = inputCtx.createScriptProcessor(2048, 1, 1);
             processorRef.current = processor;
 
+            gainNode.connect(processor); // Connect boosted audio to processor
+            
             processor.onaudioprocess = (e) => {
               if (!isMicOnRef.current) return;
               if (isDemoModeRef.current && turnCountRef.current >= 10) return;
@@ -432,7 +445,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
               const pcmBlob = createPcmBlob(downsampledData);
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
             };
-            source.connect(processor);
+            
             processor.connect(inputCtx.destination); // Required for script processor to fire in Chrome
           },
           onmessage: async (msg: LiveServerMessage) => {
@@ -477,6 +490,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
     stopVideo();
     if (micStreamRef.current) { micStreamRef.current.getTracks().forEach(track => track.stop()); micStreamRef.current = null; }
     if (inputSourceRef.current) { inputSourceRef.current.disconnect(); inputSourceRef.current = null; }
+    if (inputGainRef.current) { inputGainRef.current.disconnect(); inputGainRef.current = null; }
     if (processorRef.current) { processorRef.current.disconnect(); processorRef.current = null; }
     sessionRef.current = null;
   };
