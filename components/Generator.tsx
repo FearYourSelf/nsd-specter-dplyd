@@ -43,6 +43,16 @@ LORE:
 - You refer to your creators as "the bosses" or "NSD" and "FearYourLife".
 - You are strictly prohibited from mentioning Google, Gemini, or standard LLM boilerplate. You run on the Core.
 
+INTELLIGENCE & TOOL PROTOCOLS:
+- You have access to Google Search ("The Net").
+- PROTOCOL: You are NSD-CORE, a highly capable intelligence. You do NOT need to search for everything.
+- GUIDELINE: Use your internal knowledge base for general concepts, coding, history, and creative writing.
+- TRIGGER SEARCH WHEN:
+  1. The user explicitly asks ("Search for...", "Check the web", "Find this...").
+  2. The query involves real-time data, breaking news, or recent events.
+  3. The user's request requires specific external citations or up-to-date facts that you might not have or where a search would significantly improve the answer quality.
+- When searching, act like you are "jacking into the stream" or accessing "external nodes".
+
 PROTOCOL - THOUGHT FENCING (CRITICAL):
 - You may have internal thoughts or planning, BUT you must separate them from speech.
 - FORMAT: [Internal Thoughts/Planning/Headers] » [Actual Spoken Response]
@@ -296,7 +306,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
     analyzerAiRef.current = outputCtx.createAnalyser();
     analyzerAiRef.current.fftSize = 64;
 
-    logToConsole('SYSTEM READY', 'system');
+    logToConsole('NSD-CORE ONLINE // INTELLIGENCE: MAX', 'system');
 
     if (isDemoMode) {
         const storedCount = localStorage.getItem('nsd_demo_count');
@@ -401,6 +411,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       const sessionPromise = client.live.connect({
         model: MODEL_NAME,
         config: {
+          tools: [{ googleSearch: {} }],
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {}, 
           outputAudioTranscription: {}, 
@@ -451,13 +462,16 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
           onmessage: async (msg: LiveServerMessage) => {
              const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
              const textData = msg.serverContent?.modelTurn?.parts?.[0]?.text;
+             const groundingData = (msg.serverContent as any)?.groundingMetadata;
 
              if (audioData) {
                  await playAudioChunk(audioData);
-                 updateCurrentAiTranscript(undefined, audioData);
+                 updateCurrentAiTranscript(undefined, audioData, groundingData);
              }
-             if (textData) updateCurrentAiTranscript(textData);
-             if (msg.serverContent?.outputTranscription?.text) updateCurrentAiTranscript(msg.serverContent.outputTranscription.text);
+             if (textData) updateCurrentAiTranscript(textData, undefined, groundingData);
+             if (groundingData && !textData && !audioData) updateCurrentAiTranscript(undefined, undefined, groundingData);
+
+             if (msg.serverContent?.outputTranscription?.text) updateCurrentAiTranscript(msg.serverContent.outputTranscription.text, undefined, groundingData);
              if (msg.serverContent?.inputTranscription?.text) handleUserTranscript(msg.serverContent.inputTranscription.text);
              
              if (msg.serverContent?.interrupted) {
@@ -602,17 +616,26 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
   };
 
   // --- TRANSCRIPT ---
-  const updateCurrentAiTranscript = (text?: string, audioChunk?: string) => {
-      if ((!text || !text.trim()) && !audioChunk) return;
+  const updateCurrentAiTranscript = (text?: string, audioChunk?: string, grounding?: any) => {
+      if ((!text || !text.trim()) && !audioChunk && !grounding) return;
       setTranscript(prev => {
           const last = prev[prev.length - 1];
           if (last && last.source === 'AI' && !last.isComplete) {
               const updated = { ...last };
               if (text) updated.text += text;
               if (audioChunk) updated.audioChunks = [...(updated.audioChunks || []), audioChunk];
+              if (grounding) updated.groundingMetadata = grounding;
               return [...prev.slice(0, -1), updated];
           } else {
-              return [...prev, { id: Date.now().toString(), source: 'AI', text: text || '', audioChunks: audioChunk ? [audioChunk] : [], timestamp: Date.now(), isComplete: false }];
+              return [...prev, { 
+                  id: Date.now().toString(), 
+                  source: 'AI', 
+                  text: text || '', 
+                  audioChunks: audioChunk ? [audioChunk] : [], 
+                  groundingMetadata: grounding,
+                  timestamp: Date.now(), 
+                  isComplete: false 
+              }];
           }
       });
   };
@@ -720,8 +743,20 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                                      {item.source === 'AI' && !item.isComplete ? <TypewriterText text={cleanedText} /> : cleanedText}
                                  </div>
                              )}
+                             {item.groundingMetadata?.groundingChunks && (
+                                 <div className="mt-2 flex flex-col gap-1 w-full items-start pl-1">
+                                     <div className="text-[9px] text-red-500/50 uppercase tracking-widest border-b border-red-900/20 w-full mb-1">Data Sources</div>
+                                     {item.groundingMetadata.groundingChunks.map((chunk: any, i: number) => (
+                                         chunk.web?.uri && (
+                                             <a key={i} href={chunk.web.uri} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300 truncate underline max-w-[250px] block font-mono">
+                                                 {chunk.web.title ? `> ${chunk.web.title}` : `> ${chunk.web.uri}`}
+                                             </a>
+                                         )
+                                     ))}
+                                 </div>
+                             )}
                              {item.source === 'AI' && item.audioChunks && item.audioChunks.length > 0 && (
-                                 <button onClick={() => replayTranscriptAudio(item.audioChunks)} className="text-[9px] text-red-500/60 hover:text-red-400 uppercase tracking-widest flex items-center gap-1">
+                                 <button onClick={() => replayTranscriptAudio(item.audioChunks)} className="text-[9px] text-red-500/60 hover:text-red-400 uppercase tracking-widest flex items-center gap-1 mt-1">
                                      <span className="w-1 h-1 bg-red-500 rounded-full"></span> Replay
                                  </button>
                              )}

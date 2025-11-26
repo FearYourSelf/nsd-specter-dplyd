@@ -25,6 +25,7 @@ export interface TranscriptItem {
   source: 'USER' | 'AI';
   text: string;
   audioChunks?: string[]; // Array of Base64 strings for replay
+  groundingMetadata?: any; // Search results and citations
   timestamp: number;
   isComplete: boolean;
 }
