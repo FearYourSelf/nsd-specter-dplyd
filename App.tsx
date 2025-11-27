@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import Intro from './components/Intro';
 import Generator from './components/Generator';
@@ -132,6 +131,13 @@ const App: React.FC = () => {
          }
       }, 10);
   };
+  
+  const handleDemoLockout = () => {
+      setViewState('LOGIN');
+      setIsDemoMode(false);
+      setError(true);
+      setLoginErrorMsg("SESSION EXPIRED");
+  };
 
   const handleConsoleCommand = (e: React.FormEvent) => {
       e.preventDefault();
@@ -162,6 +168,12 @@ const App: React.FC = () => {
           const lockTime = Date.now() - (3600000 - (mins * 60000));
           localStorage.setItem('nsd_demo_lock_time', lockTime.toString());
           logToConsole(`DEMO LOCK SET: ${mins}M REMAINING`, 'warning');
+          
+          // Force immediate lockout if currently in demo mode
+          if (isDemoMode) {
+              logToConsole('INITIATING LOCKOUT...', 'error');
+              setTimeout(() => handleDemoLockout(), 1000);
+          }
       } else if (command === 'set_usage') {
           const count = args[0] ? args[0] : '10';
           localStorage.setItem('nsd_demo_count', count);
@@ -200,18 +212,25 @@ const App: React.FC = () => {
 
     try {
         const client = getClient();
-        const promptText = `You are a security system. The user is trying to bypass the lockout. There are ${timeLeft} minutes remaining. Mock them for their persistence and deny access. Be brief and ruthless.`;
         
-        const response = await client.models.generateContent({
+        // Step 1: Generate the roast text (Reasoning)
+        const genResponse = await client.models.generateContent({
+             model: 'gemini-2.5-flash',
+             contents: { parts: [{ text: `Generate a short, ruthless, 1-sentence sarcastic roast for a user who is trying to bypass a security lockout. They have ${timeLeft} minutes left to wait. Do not include quotes or speaker labels.` }] }
+        });
+        const roastText = genResponse.text || `Access denied. Wait ${timeLeft} minutes.`;
+
+        // Step 2: Speak the roast text (TTS)
+        const ttsResponse = await client.models.generateContent({
             model: 'gemini-2.5-flash-preview-tts',
-            contents: { parts: [{ text: promptText }] },
+            contents: { parts: [{ text: roastText }] },
             config: {
                 responseModalities: [Modality.AUDIO],
                 speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } }
             }
         });
 
-        const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        const audioData = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         if (audioData) {
             if (!roastAudioContextRef.current) {
                 roastAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -268,13 +287,6 @@ const App: React.FC = () => {
         setError(true);
         setPassword('');
     }
-  };
-
-  const handleDemoLockout = () => {
-      setViewState('LOGIN');
-      setIsDemoMode(false);
-      setError(true);
-      setLoginErrorMsg("SESSION EXPIRED");
   };
 
   return (
