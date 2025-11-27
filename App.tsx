@@ -4,6 +4,7 @@ import Intro from './components/Intro';
 import Generator from './components/Generator';
 import { getClient } from './services/geminiService';
 import { decodeBase64, decodeAudioData } from './services/audioUtils';
+import { Modality } from '@google/genai';
 
 // --- PARTICLE SYSTEM ---
 const ParticleBackground: React.FC<{ mousePos: {x: number, y: number} }> = ({ mousePos }) => {
@@ -147,6 +148,8 @@ const App: React.FC = () => {
           logToConsole('clear            : Flush terminal', 'info');
           logToConsole('voice [name]     : Set identity', 'info');
           logToConsole('override_demo    : Reset constraints', 'warning');
+          logToConsole('lock_demo [mins] : Set lockout timer', 'warning');
+          logToConsole('set_usage [n]    : Set demo count', 'warning');
       } else if (command === 'clear') {
           setConsoleLogs([]);
       } else if (command === 'override_demo') {
@@ -154,6 +157,15 @@ const App: React.FC = () => {
           localStorage.setItem('nsd_demo_count', '0');
           setLoginErrorMsg(null);
           logToConsole('CONSTRAINTS REMOVED', 'success');
+      } else if (command === 'lock_demo') {
+          const mins = args[0] ? parseInt(args[0]) : 60;
+          const lockTime = Date.now() - (3600000 - (mins * 60000));
+          localStorage.setItem('nsd_demo_lock_time', lockTime.toString());
+          logToConsole(`DEMO LOCK SET: ${mins}M REMAINING`, 'warning');
+      } else if (command === 'set_usage') {
+          const count = args[0] ? args[0] : '10';
+          localStorage.setItem('nsd_demo_count', count);
+          logToConsole(`USAGE COUNT SET TO ${count}`, 'warning');
       } else if (command === 'voice' || command === 'set_voice') {
           if (args.length === 0) {
               logToConsole(`CURRENT: ${currentVoice}`, 'info');
@@ -184,33 +196,45 @@ const App: React.FC = () => {
   const playRoast = async (timeLeft: number) => {
     setIsRoasting(true);
     setLoginErrorMsg("PROTOCOL VIOLATION. ANALYZING...");
+    logToConsole("UNAUTHORIZED ACCESS DETECTED", "warning");
+
     try {
         const client = getClient();
-        const promptText = `User tried to login too soon. ${timeLeft} mins left. Mock them briefly. No intro.`;
+        const promptText = `You are a security system. The user is trying to bypass the lockout. There are ${timeLeft} minutes remaining. Mock them for their persistence and deny access. Be brief and ruthless.`;
+        
         const response = await client.models.generateContent({
             model: 'gemini-2.5-flash-preview-tts',
             contents: { parts: [{ text: promptText }] },
             config: {
-                responseModalities: ['AUDIO'],
+                responseModalities: [Modality.AUDIO],
                 speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } }
             }
         });
+
         const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         if (audioData) {
             if (!roastAudioContextRef.current) {
                 roastAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
             }
             const ctx = roastAudioContextRef.current;
-            if (ctx.state === 'suspended') await ctx.resume();
+            
+            if (ctx.state === 'suspended') {
+                await ctx.resume();
+            }
+
             const uint8 = decodeBase64(audioData);
-            const buffer = await decodeAudioData(uint8, ctx);
+            const buffer = await decodeAudioData(uint8, ctx, 24000);
+            
             const source = ctx.createBufferSource();
             source.buffer = buffer;
             source.connect(ctx.destination);
             source.start();
         }
+        
         setTimeout(() => { setError(true); setLoginErrorMsg(`LOCKED: ${timeLeft}M`); setIsRoasting(false); }, 500);
+
     } catch (e) {
+        console.error(e);
         setError(true); setLoginErrorMsg(`LOCKED: ${timeLeft}M`); setIsRoasting(false);
     }
   };
