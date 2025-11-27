@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import Intro from './components/Intro';
 import Generator from './components/Generator';
@@ -213,24 +214,31 @@ const App: React.FC = () => {
     try {
         const client = getClient();
         
-        // Step 1: Generate the roast text (Reasoning)
-        const genResponse = await client.models.generateContent({
-             model: 'gemini-2.5-flash',
-             contents: { parts: [{ text: `Generate a short, ruthless, 1-sentence sarcastic roast for a user who is trying to bypass a security lockout. They have ${timeLeft} minutes left to wait. Do not include quotes or speaker labels.` }] }
+        // STEP 1: Generate the Roast TEXT using Flash (Fast)
+        // Explicitly asking for Australian slang to force the persona in text
+        const textResponse = await client.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: { parts: [{ text: `You are Specter, a ruthless security system with an Australian accent. The user is locked out for ${timeLeft} minutes but keeps spamming the login. Write a short, savage 1-sentence roast. Tell them to go touch grass, get a life, or stop being so obsessed. Use casual Australian flair (mate, bloody) but don't overdo the slang—focus on the burn. Do not use hashtags.` }] },
         });
-        const roastText = genResponse.text || `Access denied. Wait ${timeLeft} minutes.`;
 
-        // Step 2: Speak the roast text (TTS)
-        const ttsResponse = await client.models.generateContent({
-            model: 'gemini-2.5-flash-preview-tts',
-            contents: { parts: [{ text: roastText }] },
-            config: {
+        const roastText = textResponse.text;
+        if (!roastText) throw new Error("No text generated");
+        
+        logToConsole(`> "${roastText}"`, 'system'); // Visual feedback
+
+        // STEP 2: Generate the AUDIO using TTS model
+        // Using 'Fenrir' voice which is deeper/huskier to match "Specter" better than Puck
+        const audioResponse = await client.models.generateContent({
+             model: 'gemini-2.5-flash-preview-tts', 
+             contents: { parts: [{ text: roastText }] },
+             config: {
                 responseModalities: [Modality.AUDIO],
-                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } }
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Fenrir' } } }
             }
         });
 
-        const audioData = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        const audioData = audioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        
         if (audioData) {
             if (!roastAudioContextRef.current) {
                 roastAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
