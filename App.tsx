@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import Intro from './components/Intro';
 import Generator from './components/Generator';
@@ -105,6 +104,7 @@ const App: React.FC = () => {
   const [loginErrorMsg, setLoginErrorMsg] = useState<string | null>(null);
   const [isRoasting, setIsRoasting] = useState(false);
   const [isDemoMode, setIsDemoMode] = useState(false);
+  const [currentUser, setCurrentUser] = useState<'ADMIN' | 'DEMO' | 'LAURA'>('ADMIN');
   
   // Console State
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
@@ -136,6 +136,7 @@ const App: React.FC = () => {
   const handleDemoLockout = () => {
       setViewState('LOGIN');
       setIsDemoMode(false);
+      setCurrentUser('ADMIN'); // Reset to default safely
       setError(true);
       setLoginErrorMsg("SESSION EXPIRED");
   };
@@ -273,6 +274,13 @@ const App: React.FC = () => {
 
     if (password === 'nsdadmin') {
         setIsDemoMode(false);
+        setCurrentUser('ADMIN');
+        localStorage.removeItem('nsd_demo_count');
+        localStorage.removeItem('nsd_demo_lock_time');
+        setViewState('APP');
+    } else if (password === 'laurita123') {
+        setIsDemoMode(false);
+        setCurrentUser('LAURA');
         localStorage.removeItem('nsd_demo_count');
         localStorage.removeItem('nsd_demo_lock_time');
         setViewState('APP');
@@ -290,6 +298,7 @@ const App: React.FC = () => {
              }
         }
         setIsDemoMode(true);
+        setCurrentUser('DEMO');
         setViewState('APP');
     } else {
         setError(true);
@@ -364,6 +373,7 @@ const App: React.FC = () => {
                   voiceName={currentVoice}
                   isDemoMode={isDemoMode}
                   onDemoLockout={handleDemoLockout}
+                  currentUser={currentUser}
                 />
             </div>
         )}

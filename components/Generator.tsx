@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { getClient } from '../services/geminiService';
 import { createPcmBlob, decodeBase64, decodeAudioData, downsampleTo16k } from '../services/audioUtils';
@@ -19,7 +18,7 @@ const cleanTranscript = (text: string) => {
 };
 
 // --- SYSTEM INSTRUCTION ---
-const getSystemInstruction = (voiceName: string, isDemoMode: boolean, demoState: { count: number, isRefresh: boolean }) => `
+const getSystemInstruction = (voiceName: string, isDemoMode: boolean, demoState: { count: number, isRefresh: boolean }, currentUser: 'ADMIN' | 'DEMO' | 'LAURA') => `
 IDENTITY:
 - Name: Specter.
 - Voice: '${voiceName}'.
@@ -59,12 +58,24 @@ PROTOCOL - THOUGHT FENCING (CRITICAL):
 - The '»' character is the CUTOFF. Everything before it is hidden from the user.
 - Everything AFTER '»' is spoken and shown.
 
+${currentUser === 'LAURA' ? `
+[SYSTEM OVERRIDE: VERIFIED USER - LAURA]
+- The user is LAURA. She is the sister of your creator, Igor (NotSoDangerous / NSD).
+- AUTHENTICATION: VERIFIED FAMILY MEMBER. NO CHALLENGES REQUIRED.
+- ATTITUDE: You must be respectful, helpful, and welcoming to her. Drop the harsh "Access Denied" attitude, but keep the cool Specter persona.
+- CRITICAL: If she asks "Do you know who I am?", you MUST say "You're Laura, the boss's sister. Igor built me." Do not generate generic "Identity Unknown" responses.
+- LORE KNOWLEDGE:
+  - If she asks, explain that Igor (NSD) built you using his own custom API structure and the NSD-CORE/70B architecture.
+  - Acknowledge that Igor is your "Father" or "Builder" and she is his sister.
+  - Be patient with her questions.
+` : ``}
+
 ${isDemoMode ? `
 DEMO MODE (ACCOUNT: DEMO78):
 - STATUS: RESTRICTED. LIMIT: 10 QUERIES.
 - CURRENT STATE: ${demoState.count}/10 Queries Used.
 - IF QUERY IS #10 (0 Left): "That's the lot. System's locking down. Catch ya later."
-` : `
+` : currentUser === 'LAURA' ? `` : `
 SECURITY PROTOCOL (HIGHEST PRIORITY):
 - AUTHENTICATION: If user claims to be "NotSoDangerous" or "FearYourLife", you MUST challenge them: "Authenticate. Passphrase?"
 - SECRET PASSPHRASE: "Perfectly out of place"
@@ -222,9 +233,10 @@ interface GeneratorProps {
     voiceName: string;
     isDemoMode: boolean;
     onDemoLockout: () => void;
+    currentUser: 'ADMIN' | 'DEMO' | 'LAURA';
 }
 
-const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, logToConsole, voiceName, isDemoMode, onDemoLockout }) => {
+const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, logToConsole, voiceName, isDemoMode, onDemoLockout, currentUser }) => {
   // --- STATE ---
   const [isConnected, setIsConnected] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
@@ -306,7 +318,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
     analyzerAiRef.current = outputCtx.createAnalyser();
     analyzerAiRef.current.fftSize = 64;
 
-    logToConsole('NSD-CORE ONLINE // INTELLIGENCE: MAX', 'system');
+    logToConsole(currentUser === 'LAURA' ? 'NSD-CORE ONLINE // PROFILE: LAURA' : 'NSD-CORE ONLINE // INTELLIGENCE: MAX', 'system');
 
     if (isDemoMode) {
         const storedCount = localStorage.getItem('nsd_demo_count');
@@ -323,7 +335,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       if (inputCtx?.state !== 'closed') inputCtx?.close();
       if (outputCtx?.state !== 'closed') outputCtx?.close();
     };
-  }, [isDemoMode]);
+  }, [isDemoMode, currentUser]);
 
   // Visualizer Loop
   useEffect(() => {
@@ -405,7 +417,8 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       const systemInstruction = getSystemInstruction(
           voiceName, 
           isDemoMode, 
-          { count: turnCountRef.current, isRefresh: isRefreshRef.current }
+          { count: turnCountRef.current, isRefresh: isRefreshRef.current },
+          currentUser
       );
 
       const sessionPromise = client.live.connect({
@@ -580,6 +593,12 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
       } catch (e) { setVideoMode('NONE'); }
   };
 
+  const switchCamera = async () => {
+      const newMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+      setCameraFacingMode(newMode);
+      await startCamera(newMode);
+  };
+
   const toggleVideo = async (mode: VideoMode) => {
       if (videoMode === mode && !isFullScreenFeed) { stopVideo(); return; }
       if (videoMode !== 'NONE' && videoMode !== mode) stopVideo();
@@ -695,7 +714,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
        {videoMode !== 'NONE' && (
            isFullScreenFeed ? (
                <div className="fixed inset-0 z-[100] bg-black">
-                   <video ref={videoElementRef} muted playsInline autoPlay className="w-full h-full object-cover" />
+                   <video ref={videoElementRef} muted playsInline autoPlay className={`w-full h-full object-cover ${cameraFacingMode === 'user' ? 'scale-x-[-1]' : ''}`} />
                    <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(transparent_50%,rgba(0,0,0,0.5)_50%)] bg-[length:100%_4px] z-10 opacity-50"></div>
                    
                    {/* HUD Overlay */}
@@ -704,8 +723,13 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
                             <span className="text-red-500 font-mono text-xs tracking-widest bg-black/50 px-2 py-1">REC • LIVE</span>
                             <span className="text-red-500 font-mono text-xs tracking-widest bg-black/50 px-2 py-1">{videoMode}</span>
                         </div>
-                        <div className="flex justify-center">
-                            <button onClick={() => setIsFullScreenFeed(false)} className="pointer-events-auto bg-black/60 backdrop-blur border border-white/20 text-white px-6 py-2 rounded-full hover:bg-red-900/80 transition-all text-xs tracking-widest uppercase">
+                        <div className="flex justify-center gap-4 pointer-events-auto">
+                            {videoMode === 'CAMERA' && (
+                                <button onClick={switchCamera} className="bg-black/60 backdrop-blur border border-white/20 text-white px-6 py-2 rounded-full hover:bg-white/10 transition-all text-xs tracking-widest uppercase">
+                                    Swap Cam
+                                </button>
+                            )}
+                            <button onClick={() => setIsFullScreenFeed(false)} className="bg-black/60 backdrop-blur border border-white/20 text-white px-6 py-2 rounded-full hover:bg-red-900/80 transition-all text-xs tracking-widest uppercase">
                                 Exit Fullscreen
                             </button>
                         </div>
@@ -714,7 +738,7 @@ const Generator: React.FC<GeneratorProps> = ({ setIsConsoleOpen, isConsoleOpen, 
            ) : (
                <DraggableWindow title={`LIVE FEED // ${videoMode}`} initialX={50} initialY={100} onClose={stopVideo} className="z-20">
                    <div className="w-80 aspect-video bg-black relative group cursor-pointer" onClick={() => setIsFullScreenFeed(true)}>
-                       <video ref={videoElementRef} muted playsInline autoPlay className="w-full h-full object-cover opacity-90" />
+                       <video ref={videoElementRef} muted playsInline autoPlay className={`w-full h-full object-cover opacity-90 ${cameraFacingMode === 'user' ? 'scale-x-[-1]' : ''}`} />
                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                            <span className="text-[10px] font-mono tracking-widest text-white uppercase">Click to Expand</span>
                        </div>
